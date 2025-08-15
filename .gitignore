@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+.venv-1/
+venv/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# pyenv
+.python-version
+
+# VSCode
+.vscode/
+
+# pytest
+.pytest_cache/
+
+# SQLite DB
+backend/ecolang.db
+
+# OS
+Thumbs.db
+.DS_Store
