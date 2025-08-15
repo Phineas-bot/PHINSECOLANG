@@ -1,4 +1,4 @@
-"""Small cleanup utility for local dev artifacts.
+r"""Small cleanup utility for local dev artifacts.
 
 Usage:
   python scripts\clean_repo.py         # dry-run
