@@ -9,7 +9,8 @@ def run_code_in_subprocess(code: str, timeout_s: int = 2) -> Tuple[int, str, str
     """Run the given code string in a short-lived subprocess.
 
     Returns: (returncode, stdout, stderr)
-    The subprocess runs a small runner script that executes the code under json-wrapped protocol.
+        The subprocess runs a small runner script that executes the code
+        under a json-wrapped protocol.
     """
     runner_path = Path(__file__).parent / "_subprocess_worker.py"
     if not runner_path.exists():

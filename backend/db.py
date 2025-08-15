@@ -71,14 +71,25 @@ def save_script(
     conn.close()
     # optionally save a first run entry if eco_stats provided
     if eco_stats:
-        save_run(script_id, eco_stats.get('energy_J'), eco_stats.get('energy_kWh'), eco_stats.get('co2_g'), eco_stats.get('total_ops'), eco_stats.get('duration_ms'), eco_stats.get('tips'))
+        save_run(
+            script_id,
+            eco_stats.get("energy_J"),
+            eco_stats.get("energy_kWh"),
+            eco_stats.get("co2_g"),
+            eco_stats.get("total_ops"),
+            eco_stats.get("duration_ms"),
+            eco_stats.get("tips"),
+        )
     return script_id
 
 
 def list_scripts() -> List[Dict[str, Any]]:
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute('SELECT script_id, title, created_at FROM Scripts ORDER BY created_at DESC')
+    cur.execute(
+        'SELECT script_id, title, created_at FROM Scripts '
+        'ORDER BY created_at DESC'
+    )
     rows = cur.fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -87,7 +98,11 @@ def list_scripts() -> List[Dict[str, Any]]:
 def get_script(script_id: int) -> Optional[Dict[str, Any]]:
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute('SELECT script_id, title, code_text, created_at FROM Scripts WHERE script_id = ?', (script_id,))
+    cur.execute(
+        'SELECT script_id, title, code_text, created_at FROM Scripts '
+        'WHERE script_id = ?',
+        (script_id,),
+    )
     row = cur.fetchone()
     conn.close()
     return dict(row) if row else None
@@ -112,7 +127,15 @@ def save_run(
             duration_ms, tips
         ) VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (script_id, energy_J, energy_kWh, co2_g, total_ops, duration_ms, tips_json),
+        (
+            script_id,
+            energy_J,
+            energy_kWh,
+            co2_g,
+            total_ops,
+            duration_ms,
+            tips_json,
+        ),
     )
     run_id = cur.lastrowid
     conn.commit()

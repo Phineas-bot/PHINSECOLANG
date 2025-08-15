@@ -25,16 +25,34 @@ class RunRequest(BaseModel):
 async def run_code(req: RunRequest):
     start = time.time()
     try:
-        result = interpreter.run(req.code, inputs=req.inputs or {}, settings=req.settings or {})
+        result = interpreter.run(
+            req.code,
+            inputs=req.inputs or {},
+            settings=req.settings or {},
+        )
     except Exception as e:
-        return {"output": "", "warnings": [], "eco": None, "duration_ms": int((time.time()-start)*1000), "errors": {"code": "SERVER_ERROR", "message": str(e)}}
+        return {
+            "output": "",
+            "warnings": [],
+            "eco": None,
+            "duration_ms": int((time.time() - start) * 1000),
+            "errors": {"code": "SERVER_ERROR", "message": str(e)},
+        }
     result["duration_ms"] = int((time.time()-start)*1000)
 
     # persist successful runs
     try:
         if result.get('errors') is None and result.get('eco'):
             eco = result['eco']
-            db.save_run(req.script_id, eco.get('energy_J'), eco.get('energy_kWh'), eco.get('co2_g'), eco.get('total_ops'), result.get('duration_ms'), eco.get('tips'))
+            db.save_run(
+                req.script_id,
+                eco.get("energy_J"),
+                eco.get("energy_kWh"),
+                eco.get("co2_g"),
+                eco.get("total_ops"),
+                result.get("duration_ms"),
+                eco.get("tips"),
+            )
     except Exception as e:
         # non-fatal: include warning but don't fail the request
         result.setdefault('warnings', []).append(f"Failed to persist run: {e}")

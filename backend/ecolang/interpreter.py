@@ -93,7 +93,15 @@ def eval_expr(expr: str, env: Dict[str, Any]):
 class Interpreter:
     def __init__(self):
         # Default tunables from spec
-        self.ops_map = { 'print':50, 'loop_check':5, 'math':10, 'assign':5, 'io':200, 'optimize':1000, 'other':5 }
+        self.ops_map = {
+            'print': 50,
+            'loop_check': 5,
+            'math': 10,
+            'assign': 5,
+            'io': 200,
+            'optimize': 1000,
+            'other': 5,
+        }
         self.energy_per_op_J = 1e-9
         self.idle_power_W = 0.5
         self.co2_per_kwh_g = 475
@@ -101,13 +109,22 @@ class Interpreter:
         self.max_steps = 100000
         self.max_output_chars = 5000
 
-    def _run_sub_interpreter(self, code: str, inputs: Dict[str, Any], settings: Dict[str, Any]) -> Dict[str, Any]:
+    def _run_sub_interpreter(
+        self,
+        code: str,
+        inputs: Dict[str, Any],
+        settings: Dict[str, Any],
+    ) -> Dict[str, Any]:
         """Run a fresh Interpreter for nested blocks to preserve state.
 
         The original implementation used Interpreter().run directly; this
         helper keeps the behaviour but centralizes the call site.
         """
-        return Interpreter().run(code, inputs=inputs, settings=settings)
+        return Interpreter().run(
+            code,
+            inputs=inputs,
+            settings=settings,
+        )
 
 
     def run(self, code: str, inputs: Dict[str, Any] = None, settings: Dict[str, Any] = None) -> Dict[str, Any]:
@@ -438,7 +455,14 @@ class Interpreter:
         }
         # simple tip
         if total_ops > 1000:
-            eco['tips'].append('Consider reducing loop iterations or heavy math operations')
+            eco['tips'].append(
+                'Consider reducing loop iterations or heavy math operations'
+            )
             warnings.append('High estimated energy use')
 
-        return {"output": "\n".join(output_lines) + ("\n" if output_lines else ""), "warnings": warnings, "eco": eco, "errors": None}
+        return {
+            "output": "\n".join(output_lines) + ("\n" if output_lines else ""),
+            "warnings": warnings,
+            "eco": eco,
+            "errors": None,
+        }
