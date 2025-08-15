@@ -1,9 +1,13 @@
-import sqlite3
 import json
-from typing import Optional, Dict, Any, List
+import os
+import sqlite3
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-DB_PATH = Path(__file__).parent / 'ecolang.db'
+# Allow overriding the DB file used by the application (useful for tests)
+DB_PATH = Path(
+    os.environ.get('ECOLANG_DB_PATH') or Path(__file__).parent / 'ecolang.db'
+)
 
 
 def get_conn():
@@ -50,10 +54,18 @@ def init_db():
     conn.close()
 
 
-def save_script(title: str, code_text: str, user_id: Optional[int] = None, eco_stats: Optional[Dict[str, Any]] = None) -> int:
+def save_script(
+    title: str,
+    code_text: str,
+    user_id: Optional[int] = None,
+    eco_stats: Optional[Dict[str, Any]] = None,
+) -> int:
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute('INSERT INTO Scripts (user_id, title, code_text) VALUES (?, ?, ?)', (user_id, title, code_text))
+    cur.execute(
+        'INSERT INTO Scripts (user_id, title, code_text) VALUES (?, ?, ?)',
+        (user_id, title, code_text),
+    )
     script_id = cur.lastrowid
     conn.commit()
     conn.close()
@@ -81,12 +93,27 @@ def get_script(script_id: int) -> Optional[Dict[str, Any]]:
     return dict(row) if row else None
 
 
-def save_run(script_id: Optional[int], energy_J: Optional[float], energy_kWh: Optional[float], co2_g: Optional[float], total_ops: Optional[int], duration_ms: Optional[int], tips: Optional[List[str]] = None) -> int:
+def save_run(
+    script_id: Optional[int],
+    energy_J: Optional[float],
+    energy_kWh: Optional[float],
+    co2_g: Optional[float],
+    total_ops: Optional[int],
+    duration_ms: Optional[int],
+    tips: Optional[List[str]] = None,
+) -> int:
     conn = get_conn()
     cur = conn.cursor()
     tips_json = json.dumps(tips or [])
-    cur.execute('''INSERT INTO Runs (script_id, energy_J, energy_kWh, co2_g, total_ops, duration_ms, tips) VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                (script_id, energy_J, energy_kWh, co2_g, total_ops, duration_ms, tips_json))
+    cur.execute(
+        """
+        INSERT INTO Runs (
+            script_id, energy_J, energy_kWh, co2_g, total_ops,
+            duration_ms, tips
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (script_id, energy_J, energy_kWh, co2_g, total_ops, duration_ms, tips_json),
+    )
     run_id = cur.lastrowid
     conn.commit()
     conn.close()
@@ -97,9 +124,21 @@ def list_runs(script_id: Optional[int] = None) -> List[Dict[str, Any]]:
     conn = get_conn()
     cur = conn.cursor()
     if script_id:
-        cur.execute('SELECT run_id, script_id, energy_kWh, co2_g, total_ops, duration_ms, tips, created_at FROM Runs WHERE script_id = ? ORDER BY created_at DESC', (script_id,))
+        cur.execute(
+            (
+                "SELECT run_id, script_id, energy_kWh, co2_g, total_ops,"
+                " duration_ms, tips, created_at FROM Runs WHERE script_id = ?"
+                " ORDER BY created_at DESC"
+            ),
+            (script_id,),
+        )
     else:
-        cur.execute('SELECT run_id, script_id, energy_kWh, co2_g, total_ops, duration_ms, tips, created_at FROM Runs ORDER BY created_at DESC')
+        cur.execute(
+            (
+                "SELECT run_id, script_id, energy_kWh, co2_g, total_ops,"
+                " duration_ms, tips, created_at FROM Runs ORDER BY created_at DESC"
+            )
+        )
     rows = cur.fetchall()
     conn.close()
     out = []

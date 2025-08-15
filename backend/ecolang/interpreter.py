@@ -1,6 +1,10 @@
-import time
 import ast
-from typing import Dict, Any, Tuple, List
+import json
+import time
+from typing import Any, Dict, List, Tuple
+
+from . import subprocess_runner
+
 
 # Simple interpreter prototype supporting `say` and `let` plus expressions.
 class EvalError(Exception):
@@ -81,7 +85,7 @@ def eval_expr(expr: str, env: Dict[str, Any]):
     try:
         tree = ast.parse(expr, mode='eval')
     except SyntaxError as e:
-        raise EvalError(f"Syntax error in expression: {expr}")
+        raise EvalError(f"Syntax error in expression: {expr}") from e
     evaluator = SafeEvaluator(env)
     return evaluator.visit(tree)
 
@@ -97,7 +101,52 @@ class Interpreter:
         self.max_steps = 100000
         self.max_output_chars = 5000
 
-    def run(self, code: str, inputs: Dict[str, Any]={}, settings: Dict[str, Any]={}) -> Dict[str, Any]:
+    def _run_sub_interpreter(self, code: str, inputs: Dict[str, Any], settings: Dict[str, Any]) -> Dict[str, Any]:
+        """Run a fresh Interpreter for nested blocks to preserve state.
+
+        The original implementation used Interpreter().run directly; this
+        helper keeps the behaviour but centralizes the call site.
+        """
+        return Interpreter().run(code, inputs=inputs, settings=settings)
+
+
+    def run(self, code: str, inputs: Dict[str, Any] = None, settings: Dict[str, Any] = None) -> Dict[str, Any]:
+        # Avoid mutable defaults
+        if inputs is None:
+            inputs = {}
+        if settings is None:
+            settings = {}
+
+        # If requested, run the whole program in a subprocess for isolation
+        if settings.get("use_subprocess"):
+            try:
+                rc, out, err = subprocess_runner.run_code_in_subprocess(
+                    code, timeout_s=int(settings.get("timeout_s", 2))
+                )
+            except Exception as e:
+                return {
+                    "output": "",
+                    "warnings": [],
+                    "eco": None,
+                    "errors": {"code": "SUBPROCESS_ERROR", "message": str(e)},
+                }
+            if rc != 0:
+                return {
+                    "output": out,
+                    "warnings": [],
+                    "eco": None,
+                    "errors": {"code": "SUBPROCESS_FAILED", "message": err},
+                }
+            try:
+                payload = json.loads(out)
+                return {
+                    "output": str(payload.get("result")),
+                    "warnings": [],
+                    "eco": None,
+                    "errors": payload.get("error"),
+                }
+            except Exception:
+                return {"output": out, "warnings": [], "eco": None, "errors": None}
         start_time = time.time()
         env: Dict[str, Any] = {}
         output_lines: List[str] = []
@@ -164,9 +213,9 @@ class Interpreter:
                     return {"output": "\n".join(output_lines), "warnings": warnings, "eco": None, "errors": {"code":"RUNTIME_ERROR","message":str(e)}}
                 output = str(val)
                 output_lines.append(output)
-                total_ops += int(self.ops_map.get('print',50) * ops_scale)
+                total_ops += int(self.ops_map.get('print', 50) * ops_scale)
                 # enforce max output length
-                if sum(len(l) for l in output_lines) > self.max_output_chars:
+                if sum(len(s) for s in output_lines) > self.max_output_chars:
                     warnings.append('Output truncated (too long)')
                     break
                 i += 1
@@ -176,16 +225,34 @@ class Interpreter:
             if line.startswith('let '):
                 rest = line[4:].strip()
                 if '=' not in rest:
-                    return {"output": "\n".join(output_lines), "warnings": warnings, "eco": None, "errors": {"code":"SYNTAX_ERROR","message":"Expected '=' in let statement"}}
+                    return {
+                        "output": "\n".join(output_lines),
+                        "warnings": warnings,
+                        "eco": None,
+                        "errors": {
+                            "code": "SYNTAX_ERROR",
+                            "message": "Expected '=' in let statement",
+                        },
+                    }
                 name, expr = rest.split('=', 1)
                 name = name.strip()
                 expr = expr.strip()
                 if not name.isidentifier():
-                    return {"output": "\n".join(output_lines), "warnings": warnings, "eco": None, "errors": {"code":"SYNTAX_ERROR","message":"Invalid identifier in let"}}
+                    return {
+                        "output": "\n".join(output_lines),
+                        "warnings": warnings,
+                        "eco": None,
+                        "errors": {"code": "SYNTAX_ERROR", "message": "Invalid identifier in let"},
+                    }
                 try:
                     val = eval_expr(expr, env)
                 except EvalError as e:
-                    return {"output": "\n".join(output_lines), "warnings": warnings, "eco": None, "errors": {"code":"RUNTIME_ERROR","message":str(e)}}
+                    return {
+                        "output": "\n".join(output_lines),
+                        "warnings": warnings,
+                        "eco": None,
+                        "errors": {"code": "RUNTIME_ERROR", "message": str(e)},
+                    }
                 env[name] = val
                 total_ops += int(self.ops_map.get('assign',5) * ops_scale)
                 i += 1
@@ -195,11 +262,24 @@ class Interpreter:
             if line.startswith('ask '):
                 name = line[4:].strip()
                 if not name.isidentifier():
-                    return {"output": "\n".join(output_lines), "warnings": warnings, "eco": None, "errors": {"code":"SYNTAX_ERROR","message":"Invalid identifier in ask"}}
+                    return {
+                        "output": "\n".join(output_lines),
+                        "warnings": warnings,
+                        "eco": None,
+                        "errors": {"code": "SYNTAX_ERROR", "message": "Invalid identifier in ask"},
+                    }
                 if name in inputs:
                     env[name] = inputs[name]
                 else:
-                    return {"output": "\n".join(output_lines), "warnings": warnings, "eco": None, "errors": {"code":"RUNTIME_ERROR","message":f"Missing input for '{name}'"}}
+                    return {
+                        "output": "\n".join(output_lines),
+                        "warnings": warnings,
+                        "eco": None,
+                        "errors": {
+                            "code": "RUNTIME_ERROR",
+                            "message": f"Missing input for '{name}'",
+                        },
+                    }
                 total_ops += int(self.ops_map.get('io',200) * ops_scale)
                 i += 1
                 continue
@@ -210,7 +290,12 @@ class Interpreter:
                 try:
                     val = eval_expr(expr, env)
                 except EvalError as e:
-                    return {"output": "\n".join(output_lines), "warnings": warnings, "eco": None, "errors": {"code":"RUNTIME_ERROR","message":str(e)}}
+                    return {
+                        "output": "\n".join(output_lines),
+                        "warnings": warnings,
+                        "eco": None,
+                        "errors": {"code": "RUNTIME_ERROR", "message": str(e)},
+                    }
                 warnings.append(str(val))
                 total_ops += int(self.ops_map.get('other',5) * ops_scale)
                 i += 1
@@ -274,7 +359,15 @@ class Interpreter:
                 # execute the chosen block lines (simple recursive evaluation)
                 sub_code = "\n".join(exec_block)
                 # recursion: run on sub_code but preserve env, collect outputs
-                sub_res = Interpreter().run(sub_code, inputs=inputs, settings={'energy_per_op_J': self.energy_per_op_J, 'idle_power_W': self.idle_power_W, 'co2_per_kwh_g': self.co2_per_kwh_g})
+                sub_res = self._run_sub_interpreter(
+                    sub_code,
+                    inputs=inputs,
+                    settings={
+                        'energy_per_op_J': self.energy_per_op_J,
+                        'idle_power_W': self.idle_power_W,
+                        'co2_per_kwh_g': self.co2_per_kwh_g,
+                    },
+                )
                 # merge sub results
                 if sub_res.get('errors'):
                     return sub_res
@@ -293,17 +386,30 @@ class Interpreter:
                 except Exception:
                     return {"output": "\n".join(output_lines), "warnings": warnings, "eco": None, "errors": {"code":"SYNTAX_ERROR","message":"Invalid repeat count"}}
                 try:
-                    block, end_idx = extract_block(i+1)
+                    block, end_idx = extract_block(i + 1)
                 except EvalError as e:
-                    return {"output": "\n".join(output_lines), "warnings": warnings, "eco": None, "errors": {"code":"SYNTAX_ERROR","message":str(e)}}
+                    return {
+                        "output": "\n".join(output_lines),
+                        "warnings": warnings,
+                        "eco": None,
+                        "errors": {"code": "SYNTAX_ERROR", "message": str(e)},
+                    }
                 sub_code = "\n".join(block)
                 # run the block n times
-                for k in range(n):
+                for _ in range(n):
                     if steps > self.max_steps:
                         warnings.append('Step limit exceeded inside repeat; aborted')
                         break
-                    total_ops += int(self.ops_map.get('loop_check',5) * ops_scale)
-                    sub_res = Interpreter().run(sub_code, inputs=inputs, settings={'energy_per_op_J': self.energy_per_op_J, 'idle_power_W': self.idle_power_W, 'co2_per_kwh_g': self.co2_per_kwh_g})
+                    total_ops += int(self.ops_map.get('loop_check', 5) * ops_scale)
+                    sub_res = self._run_sub_interpreter(
+                        sub_code,
+                        inputs=inputs,
+                        settings={
+                            'energy_per_op_J': self.energy_per_op_J,
+                            'idle_power_W': self.idle_power_W,
+                            'co2_per_kwh_g': self.co2_per_kwh_g,
+                        },
+                    )
                     if sub_res.get('errors'):
                         return sub_res
                     if sub_res.get('output'):

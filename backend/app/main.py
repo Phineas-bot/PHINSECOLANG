@@ -1,10 +1,11 @@
+import time
+from typing import Any, Dict, Optional
+
 from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import Optional, Dict, Any
-import time
 
-from ..ecolang.interpreter import Interpreter
 from .. import db
+from ..ecolang.interpreter import Interpreter
 
 app = FastAPI(title="EcoLang API", version="0.1")
 interpreter = Interpreter()
