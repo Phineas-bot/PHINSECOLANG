@@ -1,0 +1,4 @@
+# Ignore node modules for frontend
+node_modules/
+# Optional lockfile
+package-lock.json
