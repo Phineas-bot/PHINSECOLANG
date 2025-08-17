@@ -242,6 +242,10 @@ class Interpreter:
                 "energy_per_op_J": self.energy_per_op_J,
                 "idle_power_W": self.idle_power_W,
                 "co2_per_kwh_g": self.co2_per_kwh_g,
+                "max_steps": self.max_steps,
+                "max_loop": self.max_loop,
+                "max_time_s": self.max_time_s,
+                "max_output_chars": self.max_output_chars,
             },
             env=env,
         )
@@ -311,6 +315,10 @@ class Interpreter:
                     "energy_per_op_J": self.energy_per_op_J,
                     "idle_power_W": self.idle_power_W,
                     "co2_per_kwh_g": self.co2_per_kwh_g,
+                    "max_steps": self.max_steps,
+                    "max_loop": self.max_loop,
+                    "max_time_s": self.max_time_s,
+                    "max_output_chars": self.max_output_chars,
                 },
                 env=env,
             )
@@ -818,53 +826,73 @@ class Interpreter:
         warnings: List[str] = []
         total_ops = 0
         ops_scale = 1.0
-
-        # apply settings
+        # apply settings (temporarily override limits on this interpreter)
+        old_energy = self.energy_per_op_J
+        old_idle = self.idle_power_W
+        old_co2 = self.co2_per_kwh_g
+        old_max_steps = self.max_steps
+        old_max_loop = self.max_loop
+        old_max_time = self.max_time_s
+        old_max_output = self.max_output_chars
         self.energy_per_op_J = settings.get("energy_per_op_J", self.energy_per_op_J)
         self.idle_power_W = settings.get("idle_power_W", self.idle_power_W)
         self.co2_per_kwh_g = settings.get("co2_per_kwh_g", self.co2_per_kwh_g)
+        self.max_steps = settings.get("max_steps", self.max_steps)
+        self.max_loop = settings.get("max_loop", self.max_loop)
+        self.max_time_s = settings.get("max_time_s", self.max_time_s)
+        self.max_output_chars = settings.get("max_output_chars", self.max_output_chars)
 
         lines = code.splitlines()
 
         i = 0
         steps_local = 0
         start_wall = time.time()
-        while i < len(lines):
-            raw = lines[i]
-            # enforce wall-clock timeout
-            if time.time() - start_wall > self.max_time_s:
-                return output_lines, warnings, total_ops, {"errors": {"code": "TIMEOUT", "message": "Time limit exceeded"}}, start_time
-            if steps_local > self.max_steps:
-                return output_lines, warnings, total_ops, {"errors": {"code": "STEP_LIMIT", "message": "Step limit exceeded"}}, start_time
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                i += 1
-                continue
-            steps_local += 1
-            ops_scale_local = env.get("_ops_scale", ops_scale)
-            total_ops += self.ops_map.get("other", 5)
-            new_i, ops_delta, out_add, warn_add, err = self._dispatch_statement(
-                lines,
-                i,
-                line,
-                env,
-                inputs,
-                output_lines,
-                warnings,
-                total_ops,
-                ops_scale_local,
-            )
-            if err:
-                return output_lines, warnings, total_ops, {"errors": err}, start_time
-            if out_add:
-                # enforce output length cap
-                for o in out_add:
-                    if sum(len(x) for x in output_lines) + len(o) > self.max_output_chars:
-                        return output_lines, warnings, total_ops, {"errors": {"code": "OUTPUT_LIMIT", "message": "Output length limit reached"}}, start_time
-                    output_lines.append(o)
-            if warn_add:
-                warnings.extend(warn_add)
-            total_ops += ops_delta
-            i = new_i
-        return output_lines, warnings, total_ops, {}, start_time
+        try:
+            while i < len(lines):
+                raw = lines[i]
+                # enforce wall-clock timeout
+                if time.time() - start_wall > self.max_time_s:
+                    return output_lines, warnings, total_ops, {"errors": {"code": "TIMEOUT", "message": "Time limit exceeded"}}, start_time
+                if steps_local > self.max_steps:
+                    return output_lines, warnings, total_ops, {"errors": {"code": "STEP_LIMIT", "message": "Step limit exceeded"}}, start_time
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    i += 1
+                    continue
+                steps_local += 1
+                ops_scale_local = env.get("_ops_scale", ops_scale)
+                total_ops += self.ops_map.get("other", 5)
+                new_i, ops_delta, out_add, warn_add, err = self._dispatch_statement(
+                    lines,
+                    i,
+                    line,
+                    env,
+                    inputs,
+                    output_lines,
+                    warnings,
+                    total_ops,
+                    ops_scale_local,
+                )
+                if err:
+                    return output_lines, warnings, total_ops, {"errors": err}, start_time
+                if out_add:
+                    # enforce output length cap
+                    for o in out_add:
+                        if sum(len(x) for x in output_lines) + len(o) > self.max_output_chars:
+                            return output_lines, warnings, total_ops, {"errors": {"code": "OUTPUT_LIMIT", "message": "Output length limit reached"}}, start_time
+                        output_lines.append(o)
+                if warn_add:
+                    warnings.extend(warn_add)
+                total_ops += ops_delta
+                i = new_i
+            return output_lines, warnings, total_ops, {}, start_time
+        finally:
+            # restore interpreter defaults
+            self.energy_per_op_J = old_energy
+            self.idle_power_W = old_idle
+            self.co2_per_kwh_g = old_co2
+            self.max_steps = old_max_steps
+            self.max_loop = old_max_loop
+            self.max_time_s = old_max_time
+            self.max_output_chars = old_max_output
 

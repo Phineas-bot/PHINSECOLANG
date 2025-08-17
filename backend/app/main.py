@@ -11,6 +11,31 @@ app = FastAPI(title="EcoLang API", version="0.1")
 interpreter = Interpreter()
 
 
+def _cap_settings(settings: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Enforce safe upper bounds on runtime tunables passed from clients.
+
+    This prevents clients from increasing limits beyond safe server-side maxima.
+    """
+    safe = {
+        "max_steps": interpreter.max_steps,
+        "max_loop": interpreter.max_loop,
+        "max_time_s": interpreter.max_time_s,
+        "max_output_chars": interpreter.max_output_chars,
+    }
+    if not settings:
+        return safe
+    caps = {}
+    caps["max_steps"] = min(int(settings.get("max_steps", safe["max_steps"])), safe["max_steps"])
+    caps["max_loop"] = min(int(settings.get("max_loop", safe["max_loop"])), safe["max_loop"])
+    caps["max_time_s"] = min(float(settings.get("max_time_s", safe["max_time_s"])), safe["max_time_s"])
+    caps["max_output_chars"] = min(int(settings.get("max_output_chars", safe["max_output_chars"])), safe["max_output_chars"])
+    # include other settings the interpreter uses directly
+    caps["energy_per_op_J"] = float(settings.get("energy_per_op_J", interpreter.energy_per_op_J))
+    caps["idle_power_W"] = float(settings.get("idle_power_W", interpreter.idle_power_W))
+    caps["co2_per_kwh_g"] = float(settings.get("co2_per_kwh_g", interpreter.co2_per_kwh_g))
+    return caps
+
+
 @app.on_event('startup')
 def startup():
     db.init_db()
@@ -25,10 +50,19 @@ class RunRequest(BaseModel):
 async def run_code(req: RunRequest):
     start = time.time()
     try:
-        result = interpreter.run(
+        # enforce server-side caps and create a fresh Interpreter for this request
+        capped = _cap_settings(req.settings or {})
+        it = Interpreter()
+        # apply caps to this per-request interpreter instance
+        it.max_steps = capped.get("max_steps", it.max_steps)
+        it.max_loop = capped.get("max_loop", it.max_loop)
+        it.max_time_s = capped.get("max_time_s", it.max_time_s)
+        it.max_output_chars = capped.get("max_output_chars", it.max_output_chars)
+        # run with the capped settings (eco tunables are read from settings by interpreter)
+        result = it.run(
             req.code,
             inputs=req.inputs or {},
-            settings=req.settings or {},
+            settings=capped,
         )
     except Exception as e:
         return {
