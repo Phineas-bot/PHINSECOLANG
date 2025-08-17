@@ -1,3 +1,12 @@
+"""FastAPI application entrypoints for EcoLang.
+
+This module exposes HTTP endpoints used by the frontend and tests. It keeps
+handlers intentionally small: each `/run` request constructs a fresh
+`Interpreter` to avoid cross-request state sharing and calls the interpreter's
+public API. Server-side caps are enforced to prevent clients from overriding
+resource/safety limits.
+"""
+
 import time
 from typing import Any, Dict, Optional
 
@@ -8,46 +17,72 @@ from .. import db
 from ..ecolang.interpreter import Interpreter
 
 app = FastAPI(title="EcoLang API", version="0.1")
-interpreter = Interpreter()
 
 
 def _cap_settings(settings: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """Enforce safe upper bounds on runtime tunables passed from clients.
+    """Enforce server-side safe caps for runtime tunables.
 
-    This prevents clients from increasing limits beyond safe server-side maxima.
+    Clients may include a `settings` object with per-run tunables. The server
+    must not trust these entirely; `_cap_settings` establishes a conservative
+    ceiling using a fresh `Interpreter()` defaults and then applies the
+    client's requested values up to those ceilings.
+
+    Returns a dict suitable for passing directly into `Interpreter.run`.
     """
+    # create a fresh Interpreter to obtain server-side safe defaults
+    defaults = Interpreter()
     safe = {
-        "max_steps": interpreter.max_steps,
-        "max_loop": interpreter.max_loop,
-        "max_time_s": interpreter.max_time_s,
-        "max_output_chars": interpreter.max_output_chars,
+        "max_steps": defaults.max_steps,
+        "max_loop": defaults.max_loop,
+        "max_time_s": defaults.max_time_s,
+        "max_output_chars": defaults.max_output_chars,
     }
     if not settings:
         return safe
     caps = {}
+    # coerce and clamp numeric values to the server's safe maximums
     caps["max_steps"] = min(int(settings.get("max_steps", safe["max_steps"])), safe["max_steps"])
     caps["max_loop"] = min(int(settings.get("max_loop", safe["max_loop"])), safe["max_loop"])
     caps["max_time_s"] = min(float(settings.get("max_time_s", safe["max_time_s"])), safe["max_time_s"])
     caps["max_output_chars"] = min(int(settings.get("max_output_chars", safe["max_output_chars"])), safe["max_output_chars"])
-    # include other settings the interpreter uses directly
-    caps["energy_per_op_J"] = float(settings.get("energy_per_op_J", interpreter.energy_per_op_J))
-    caps["idle_power_W"] = float(settings.get("idle_power_W", interpreter.idle_power_W))
-    caps["co2_per_kwh_g"] = float(settings.get("co2_per_kwh_g", interpreter.co2_per_kwh_g))
+    # include other eco-related settings which are read by the interpreter
+    caps["energy_per_op_J"] = float(settings.get("energy_per_op_J", defaults.energy_per_op_J))
+    caps["idle_power_W"] = float(settings.get("idle_power_W", defaults.idle_power_W))
+    caps["co2_per_kwh_g"] = float(settings.get("co2_per_kwh_g", defaults.co2_per_kwh_g))
     return caps
 
 
 @app.on_event('startup')
 def startup():
+    """FastAPI startup event: initialize the database connection/schema."""
     db.init_db()
 
+
 class RunRequest(BaseModel):
+    """Pydantic model for the `/run` request body.
+
+    Fields:
+        code: EcoLang source text (string with lines/commands).
+        inputs: optional mapping for `ask` statements.
+        settings: optional runtime tunables; will be capped server-side.
+        script_id: optional id to associate this run with a saved script.
+    """
     code: str
     inputs: Optional[Dict[str, Any]] = None
     settings: Optional[Dict[str, Any]] = None
     script_id: Optional[int] = None
 
+
 @app.post("/run")
 async def run_code(req: RunRequest):
+    """Handle a code execution request.
+
+    This endpoint builds a fresh `Interpreter` instance per-request to ensure
+    isolation. It enforces server-side caps, applies them to the instance, and
+    calls `Interpreter.run`. On success it optionally persists eco stats to
+    the database. Any exceptions are turned into a SERVER_ERROR response so
+    callers receive a stable JSON shape.
+    """
     start = time.time()
     try:
         # enforce server-side caps and create a fresh Interpreter for this request
@@ -65,6 +100,7 @@ async def run_code(req: RunRequest):
             settings=capped,
         )
     except Exception as e:
+        # Return a consistent error payload instead of raising
         return {
             "output": "",
             "warnings": [],
@@ -74,7 +110,7 @@ async def run_code(req: RunRequest):
         }
     result["duration_ms"] = int((time.time()-start)*1000)
 
-    # persist successful runs
+    # persist successful runs (non-fatal; on failure we append a warning)
     try:
         if result.get('errors') is None and result.get('eco'):
             eco = result['eco']

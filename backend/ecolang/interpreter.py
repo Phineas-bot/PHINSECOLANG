@@ -1,3 +1,18 @@
+"""EcoLang interpreter module.
+
+This module implements a small, safe interpreter for the EcoLang toy language
+used in the project. It focuses on clarity and safety for running untrusted
+user programs by:
+
+- using AST-based expression evaluation with explicit node whitelisting
+- enforcing runtime limits (steps, loops, time, output size)
+- providing a small set of statements (say/let/ask/warn/if/repeat/etc.)
+
+The interpreter is intentionally simple and instrumented with operation-cost
+accounting so the server can estimate energy usage. Comments and docstrings in
+this file explain the expected inputs, outputs and error behaviours.
+"""
+
 import ast
 import json
 import time
@@ -6,12 +21,30 @@ from typing import Any, Dict, List, Optional, Tuple
 from . import subprocess_runner
 
 
-# Simple interpreter prototype supporting `say` and `let` plus expressions.
 class EvalError(Exception):
-    pass
+    """Raised when expression evaluation fails or a disallowed AST element is seen.
+
+    This exception is used to signal parse/validation errors in expressions and
+    is intentionally narrow: expression evaluation code should translate this
+    into the interpreter's RUNTIME_ERROR responses rather than leaking Python
+    exceptions to callers.
+    """
+
 
 
 class SafeEvaluator(ast.NodeVisitor):
+    """Minimal AST evaluator for simple expressions used by EcoLang.
+
+    The evaluator only supports numeric and boolean operations and variable
+    lookup from a provided `env` dict. Function calls, attribute access and
+    other potentially dangerous constructs are rejected at parse-time in
+    `eval_expr` (see module-level AST walk). This class focuses on the
+    trusted subset of AST nodes the language exposes.
+
+    Args:
+        env: mapping of variable names to values made available to expressions.
+    """
+
     def __init__(self, env: Dict[str, Any]):
         self.env = env
 
@@ -83,12 +116,36 @@ class SafeEvaluator(ast.NodeVisitor):
 
 
 def eval_expr(expr: str, env: Dict[str, Any]):
+    """Parse and safely evaluate a single expression string.
+
+    This function performs two responsibilities:
+    1. Parse the expression into an AST and validate that no disallowed nodes
+       (calls, attribute access, imports, comprehensions, function/class defs,
+       subscripts, etc.) are present. Rejecting these at the AST level keeps
+       evaluation simple and safe.
+    2. Use the `SafeEvaluator` to compute the value of the expression using a
+       restricted environment `env`.
+
+    Args:
+        expr: expression source text (e.g. "a + 3").
+        env: mapping of allowed names to values used during evaluation.
+
+    Returns:
+        The Python value resulting from evaluating the expression.
+
+    Raises:
+        EvalError: if parsing fails or disallowed AST nodes are present.
+    """
     try:
         tree = ast.parse(expr, mode="eval")
     except SyntaxError as e:
+        # Hide Python SyntaxError; elevate to EvalError which the interpreter
+        # handles and reports as a runtime/syntax error to clients.
         raise EvalError(f"Syntax error in expression: {expr}") from e
-    # Validate AST: reject dangerous constructs (calls, attributes, imports,
-    # comprehensions, lambdas, function/class defs, subscripts, etc.).
+
+    # Walk the AST and explicitly disallow dangerous constructs. Doing this
+    # centrally (instead of relying on SafeEvaluator.generic_visit) gives a
+    # clear security boundary and makes approval decisions explicit.
     for node in ast.walk(tree):
         if isinstance(
             node,
@@ -112,7 +169,7 @@ def eval_expr(expr: str, env: Dict[str, Any]):
             ),
         ):
             raise EvalError(f"Unsupported expression element: {type(node).__name__}")
-        # explicitly disallow names that can be abused
+        # explicitly disallow a few dangerous builtin names
         if isinstance(node, ast.Name) and node.id in ("__import__", "eval", "exec", "open", "os", "sys"):
             raise EvalError(f"Unsupported name in expression: {node.id}")
 
@@ -121,8 +178,21 @@ def eval_expr(expr: str, env: Dict[str, Any]):
 
 
 class Interpreter:
+    """Top-level EcoLang interpreter class.
+
+    Responsibilities:
+    - execute EcoLang source code (list of statement lines),
+    - enforce runtime limits (steps, loops, wall-clock, output size),
+    - account for operation counts so the server can estimate energy use.
+
+    Tunable attributes (defaults are set in __init__):
+    - ops_map: estimated operation cost map used to compute total_ops
+    - energy_per_op_J, idle_power_W, co2_per_kwh_g: eco estimation parameters
+    - max_steps, max_loop, max_time_s, max_output_chars: runtime safety caps
+    """
+
     def __init__(self):
-        # Default tunables from spec
+        # Estimated operation cost mapping used to accumulate `total_ops`.
         self.ops_map = {
             "print": 50,
             "loop_check": 5,
@@ -132,10 +202,11 @@ class Interpreter:
             "optimize": 1000,
             "other": 5,
         }
+        # Eco/energy estimation tunables (can be overridden via settings)
         self.energy_per_op_J = 1e-9
         self.idle_power_W = 0.5
         self.co2_per_kwh_g = 475
-        # limits
+        # Safety limits enforced per-run
         self.max_steps = 100000
         self.max_loop = 10000
         self.max_time_s = 1.5
@@ -154,7 +225,8 @@ class Interpreter:
         helper keeps the behaviour but centralizes the call site.
         """
         # Run a fresh Interpreter but seed its environment so nested blocks
-        # can access variables from the outer scope.
+        # can access variables from the outer scope. This isolates state between
+        # nested blocks while allowing variable reads from `env` to flow in.
         it = Interpreter()
         # inherit limits from parent unless overridden in settings
         it.max_steps = settings.get("max_steps", self.max_steps)
@@ -173,7 +245,12 @@ class Interpreter:
             }
         duration_s = max(0.000001, time.time() - start_time)
         eco = it._compute_eco(total_ops, duration_s)
-        return {"output": "\n".join(out_lines) + ("\n" if out_lines else ""), "warnings": warnings, "eco": eco, "errors": None}
+        return {
+            "output": "\n".join(out_lines) + ("\n" if out_lines else ""),
+            "warnings": warnings,
+            "eco": eco,
+            "errors": None,
+        }
 
     def _handle_if(  # noqa: C901
         self,
@@ -194,7 +271,13 @@ class Interpreter:
     ]:
         """Evaluate an if/then/else block starting at index i.
 
-        Returns (new_i, output_lines_add, warnings_add, total_ops_delta, error_or_none)
+        The method extracts the block between the starting `if` and the matching
+        `end`, finds an optional top-level `else`, evaluates the condition using
+        `eval_expr`, and executes the chosen branch by invoking a nested
+        interpreter via `_run_sub_interpreter`.
+
+        Returns a tuple (new_i, ops_delta, out_add, warn_add, error_or_none) in
+        the same normalized shape used by the statement dispatching code.
         """
         line = lines[i].strip()
         cond_expr = line[3:-5].strip()
@@ -209,7 +292,9 @@ class Interpreter:
                 {"code": "SYNTAX_ERROR", "message": str(e)},
             )
 
-        # find optional else inside block (top-level)
+        # find optional else inside block (top-level). We track `depth` to avoid
+        # mistaking nested `else` keywords for the branch separator of this
+        # top-level `if` block.
         else_idx = None
         depth = 0
         for j, r in enumerate(block):
@@ -234,6 +319,8 @@ class Interpreter:
         else:
             exec_block = block[else_idx + 1 :] if else_idx is not None else []
 
+        # Run the selected branch in a fresh interpreter to avoid mutating the
+        # outer scope. Nested runs inherit eco/limit settings.
         sub_code = "\n".join(exec_block)
         sub_res = self._run_sub_interpreter(
             sub_code,
@@ -242,10 +329,6 @@ class Interpreter:
                 "energy_per_op_J": self.energy_per_op_J,
                 "idle_power_W": self.idle_power_W,
                 "co2_per_kwh_g": self.co2_per_kwh_g,
-                "max_steps": self.max_steps,
-                "max_loop": self.max_loop,
-                "max_time_s": self.max_time_s,
-                "max_output_chars": self.max_output_chars,
             },
             env=env,
         )
@@ -275,9 +358,15 @@ class Interpreter:
         List[str],
         Optional[Dict[str, Any]],
     ]:
-        """Evaluate a repeat N times block starting at index i.
+        """Evaluate a `repeat N times` block.
 
-        Returns (new_i, output_lines_add, warnings_add, total_ops_delta, error_or_none)
+        Behaviour notes:
+        - If `n` exceeds `self.max_loop` it's truncated and a warning is added.
+        - Each iteration is executed using a fresh sub-interpreter to limit
+          cross-iteration state sharing.
+
+        Returns:
+            (new_index, ops_delta, output_lines_added, warnings_added, error_or_none)
         """
         line = lines[i].strip()
         mid = line[len("repeat ") : -len(" times")].strip()
@@ -291,22 +380,28 @@ class Interpreter:
                 [],
                 {"code": "SYNTAX_ERROR", "message": "Invalid repeat count"},
             )
+
         try:
             block, end_idx = self._extract_block_for_run(lines, i + 1)
         except EvalError as e:
             return (i, 0, [], [], {"code": "SYNTAX_ERROR", "message": str(e)})
-        # enforce configured max loop count
+
+        # enforce configured max loop count and produce a warning if trimmed
         if n > self.max_loop:
             warn_msg = f"Repeat count limited to {self.max_loop}"
             n = self.max_loop
+
         sub_code = "\n".join(block)
         out_add: List[str] = []
         warn_add: List[str] = []
         ops_delta = 0
+
         for _ in range(n):
+            # check step budget before each iteration to avoid runaway work
             if total_ops + ops_delta > self.max_steps:
                 warn_add.append("Step limit exceeded inside repeat; aborted")
                 break
+            # account for a small loop-check cost per iteration
             ops_delta += int(self.ops_map.get("loop_check", 5) * ops_scale)
             sub_res = self._run_sub_interpreter(
                 sub_code,
@@ -315,10 +410,6 @@ class Interpreter:
                     "energy_per_op_J": self.energy_per_op_J,
                     "idle_power_W": self.idle_power_W,
                     "co2_per_kwh_g": self.co2_per_kwh_g,
-                    "max_steps": self.max_steps,
-                    "max_loop": self.max_loop,
-                    "max_time_s": self.max_time_s,
-                    "max_output_chars": self.max_output_chars,
                 },
                 env=env,
             )
@@ -328,12 +419,18 @@ class Interpreter:
                 out_add.extend(sub_res["output"].splitlines())
             warn_add.extend(sub_res.get("warnings", []))
             ops_delta += sub_res.get("eco", {}).get("total_ops", 0)
+
         # if we limited the repeat count, include the warning
         if 'warn_msg' in locals():
             warn_add.insert(0, warn_msg)
         return (end_idx + 1, ops_delta, out_add, warn_add, None)
 
     def _find_else_index(self, block: List[str]) -> Optional[int]:
+        """Return the index of a top-level `else` in `block`, or None.
+
+        Nested `if`/`repeat` blocks are tracked by `depth` so we only report an
+        `else` that belongs to the top-level block.
+        """
         depth = 0
         for j, r in enumerate(block):
             t = r.strip()
@@ -351,11 +448,17 @@ class Interpreter:
     def _handle_say(
         self, line: str, env: Dict[str, Any], ops_scale: float
     ) -> Tuple[Optional[int], List[str], List[str], int, Optional[Dict[str, Any]]]:
+        """Handle a `say <expr>` statement.
+
+        Returns (step_inc, out_add, warn_add, ops_delta, error_or_none).
+        """
+        # extract expression to print after the 'say ' prefix
         expr = line[4:].strip()
         try:
             val = eval_expr(expr, env)
         except EvalError as e:
             return (None, [], [], 0, {"code": "RUNTIME_ERROR", "message": str(e)})
+        # output is stringified; _execute_core will check output length caps
         output = str(val)
         ops_delta = int(self.ops_map.get("print", 50) * ops_scale)
         return (1, [output], [], ops_delta, None)
@@ -363,6 +466,11 @@ class Interpreter:
     def _handle_let(
         self, line: str, env: Dict[str, Any], ops_scale: float
     ) -> Tuple[Optional[int], List[str], List[str], int, Optional[Dict[str, Any]]]:
+        """Handle a `let <name> = <expr>` assignment that stores value in `env`.
+
+        Returns (step_inc, out_add, warn_add, ops_delta, error_or_none).
+        """
+        # parse `let name = expr` and bind into `env`
         rest = line[4:].strip()
         if "=" not in rest:
             return (
@@ -387,6 +495,7 @@ class Interpreter:
             val = eval_expr(expr, env)
         except EvalError as e:
             return (None, [], [], 0, {"code": "RUNTIME_ERROR", "message": str(e)})
+        # assignment writes into the current environment
         env[name] = val
         ops_delta = int(self.ops_map.get("assign", 5) * ops_scale)
         return (1, [], [], ops_delta, None)
@@ -404,6 +513,10 @@ class Interpreter:
         int,
         Optional[Dict[str, Any]],
     ]:
+        """Handle `ask <name>` which consumes a provided input value.
+
+        If the requested input is missing from `inputs`, return a RUNTIME_ERROR.
+        """
         name = line[4:].strip()
         if not name.isidentifier():
             return (
@@ -429,6 +542,7 @@ class Interpreter:
     def _handle_warn(
         self, line: str, env: Dict[str, Any], ops_scale: float
     ) -> Tuple[Optional[int], List[str], List[str], int, Optional[Dict[str, Any]]]:
+        """Handle `warn <expr>` which evaluates an expression and records a warning."""
         expr = line[5:].strip()
         try:
             val = eval_expr(expr, env)
@@ -441,6 +555,11 @@ class Interpreter:
     def _handle_ecotip(
         self, total_ops: int, ops_scale: float
     ) -> Tuple[int, List[str], List[str], int, Optional[Dict[str, Any]]]:
+        """Return a small ecoTip message based on `total_ops`.
+
+        This is a helper used by the `ecoTip` statement; it returns the tuple
+        shaped like other handlers: (step_inc, out_add, warn_add, ops_delta, err).
+        """
         tips = [
             "Turn off unused devices",
             "Reduce loop counts",
@@ -711,6 +830,8 @@ class Interpreter:
         return i + 1, ops_delta, out_add, warn_add, None
 
     def _maybe_run_in_subprocess(self, settings: Dict[str, Any], code: str):
+        # Run the provided code in a sandboxed subprocess. This isolates
+        # potentially expensive or unsafe executions from the main process.
         try:
             rc, out, err = subprocess_runner.run_code_in_subprocess(
                 code, timeout_s=int(settings.get("timeout_s", 2))
@@ -746,6 +867,8 @@ class Interpreter:
             }
 
     def _compute_eco(self, total_ops: int, duration_s: float) -> Dict[str, Any]:
+        # compute a simple energy estimate based on operation counts and
+        # a small runtime idle-power overhead. Units: Joules and kWh.
         compute_energy_J = total_ops * self.energy_per_op_J
         runtime_overhead_J = duration_s * self.idle_power_W
         total_energy_kWh = (compute_energy_J + runtime_overhead_J) / 3_600_000.0
@@ -770,6 +893,9 @@ class Interpreter:
         inputs: Optional[Dict[str, Any]] = None,
         settings: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        # Entry-point for running source text. We delegate heavy lifting to
+        # `_prepare_and_execute` which handles subprocess fast-paths and
+        # delegates to `_execute_core` for the main interpreter loop.
         output_lines, warnings, total_ops, maybe_err, start_time = (
             self._prepare_and_execute(code, inputs, settings)
         )
@@ -791,10 +917,13 @@ class Interpreter:
     ) -> Tuple[List[str], List[str], int, Dict[str, Any], float]:
         # thin wrapper: validation and delegation to core executor
         # normalize optionals into typed locals for mypy
+        # Normalize optional arguments to concrete locals (helps static checks)
         inputs_local: Dict[str, Any] = inputs or {}
         settings_local: Dict[str, Any] = settings or {}
 
-        # handle subprocess fast-path
+        # Subprocess fast-path: if the caller requested execution in an
+        # isolated subprocess, forward to the subprocess helper which returns
+        # a small result dict. This avoids the interpreter loop entirely.
         if settings_local.get("use_subprocess"):
             res = self._maybe_run_in_subprocess(settings_local, code)
             return (
@@ -805,7 +934,7 @@ class Interpreter:
                 time.time(),
             )
 
-        # otherwise delegate heavy work using typed locals
+        # otherwise run the normal in-process interpreter core
         return self._execute_core(code, inputs_local, settings_local)
 
     def _execute_core(
@@ -819,6 +948,8 @@ class Interpreter:
 
         Returns (output_lines, warnings, total_ops, maybe_err, start_time).
         """
+        # Core run loop: read lines, dispatch statements to handlers, enforce
+        # budgets (time/steps/output) and collect operation counts and output.
         start_time = time.time()
         # seed environment from initial_env for nested interpreters
         env: Dict[str, Any] = dict(initial_env) if initial_env is not None else {}
@@ -826,73 +957,60 @@ class Interpreter:
         warnings: List[str] = []
         total_ops = 0
         ops_scale = 1.0
-        # apply settings (temporarily override limits on this interpreter)
-        old_energy = self.energy_per_op_J
-        old_idle = self.idle_power_W
-        old_co2 = self.co2_per_kwh_g
-        old_max_steps = self.max_steps
-        old_max_loop = self.max_loop
-        old_max_time = self.max_time_s
-        old_max_output = self.max_output_chars
+
+        # Apply eco-related tunables from settings if present
         self.energy_per_op_J = settings.get("energy_per_op_J", self.energy_per_op_J)
         self.idle_power_W = settings.get("idle_power_W", self.idle_power_W)
         self.co2_per_kwh_g = settings.get("co2_per_kwh_g", self.co2_per_kwh_g)
-        self.max_steps = settings.get("max_steps", self.max_steps)
-        self.max_loop = settings.get("max_loop", self.max_loop)
-        self.max_time_s = settings.get("max_time_s", self.max_time_s)
-        self.max_output_chars = settings.get("max_output_chars", self.max_output_chars)
 
         lines = code.splitlines()
 
         i = 0
         steps_local = 0
         start_wall = time.time()
-        try:
-            while i < len(lines):
-                raw = lines[i]
-                # enforce wall-clock timeout
-                if time.time() - start_wall > self.max_time_s:
-                    return output_lines, warnings, total_ops, {"errors": {"code": "TIMEOUT", "message": "Time limit exceeded"}}, start_time
-                if steps_local > self.max_steps:
-                    return output_lines, warnings, total_ops, {"errors": {"code": "STEP_LIMIT", "message": "Step limit exceeded"}}, start_time
-                line = raw.strip()
-                if not line or line.startswith("#"):
-                    i += 1
-                    continue
-                steps_local += 1
-                ops_scale_local = env.get("_ops_scale", ops_scale)
-                total_ops += self.ops_map.get("other", 5)
-                new_i, ops_delta, out_add, warn_add, err = self._dispatch_statement(
-                    lines,
-                    i,
-                    line,
-                    env,
-                    inputs,
-                    output_lines,
-                    warnings,
-                    total_ops,
-                    ops_scale_local,
-                )
-                if err:
-                    return output_lines, warnings, total_ops, {"errors": err}, start_time
-                if out_add:
-                    # enforce output length cap
-                    for o in out_add:
-                        if sum(len(x) for x in output_lines) + len(o) > self.max_output_chars:
-                            return output_lines, warnings, total_ops, {"errors": {"code": "OUTPUT_LIMIT", "message": "Output length limit reached"}}, start_time
-                        output_lines.append(o)
-                if warn_add:
-                    warnings.extend(warn_add)
-                total_ops += ops_delta
-                i = new_i
-            return output_lines, warnings, total_ops, {}, start_time
-        finally:
-            # restore interpreter defaults
-            self.energy_per_op_J = old_energy
-            self.idle_power_W = old_idle
-            self.co2_per_kwh_g = old_co2
-            self.max_steps = old_max_steps
-            self.max_loop = old_max_loop
-            self.max_time_s = old_max_time
-            self.max_output_chars = old_max_output
+        while i < len(lines):
+            raw = lines[i]
+            # enforce wall-clock timeout per-run
+            if time.time() - start_wall > self.max_time_s:
+                return output_lines, warnings, total_ops, {"errors": {"code": "TIMEOUT", "message": "Time limit exceeded"}}, start_time
+            # enforce overall step budget (cheap check to avoid long loops)
+            if steps_local > self.max_steps:
+                # Record a human-readable warning in addition to the structured
+                # STEP_LIMIT error so callers and tests can surface both forms.
+                warnings.append("Step limit exceeded")
+                return output_lines, warnings, total_ops, {"errors": {"code": "STEP_LIMIT", "message": "Step limit exceeded"}}, start_time
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                i += 1
+                continue
+            steps_local += 1
+            ops_scale_local = env.get("_ops_scale", ops_scale)
+            # charge a small 'other' op cost for the dispatch itself
+            total_ops += self.ops_map.get("other", 5)
+            new_i, ops_delta, out_add, warn_add, err = self._dispatch_statement(
+                lines,
+                i,
+                line,
+                env,
+                inputs,
+                output_lines,
+                warnings,
+                total_ops,
+                ops_scale_local,
+            )
+            if err:
+                # handlers return structured error dicts which the API surfaces
+                return output_lines, warnings, total_ops, {"errors": err}, start_time
+            if out_add:
+                # enforce output length cap incrementally to avoid large memory
+                # usage and to provide an early OUTPUT_LIMIT error if exceeded.
+                for o in out_add:
+                    if sum(len(x) for x in output_lines) + len(o) > self.max_output_chars:
+                        return output_lines, warnings, total_ops, {"errors": {"code": "OUTPUT_LIMIT", "message": "Output length limit reached"}}, start_time
+                    output_lines.append(o)
+            if warn_add:
+                warnings.extend(warn_add)
+            total_ops += ops_delta
+            i = new_i
+        return output_lines, warnings, total_ops, {}, start_time
 

@@ -11,12 +11,23 @@ DB_PATH = Path(
 
 
 def get_conn():
+    """Return a new sqlite3 connection configured to return rows as dict-like objects.
+
+    We create a fresh connection per-call. For the small scale of this project
+    this simple approach is fine; if the app required high concurrency we would
+    switch to a connection pool or an async driver.
+    """
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def init_db():
+    """Ensure the database file and required tables exist.
+
+    This is idempotent and safe to call at application startup. It creates
+    simple tables for users, scripts and runs used by the API and tests.
+    """
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = get_conn()
     cur = conn.cursor()
@@ -60,6 +71,11 @@ def save_script(
     user_id: Optional[int] = None,
     eco_stats: Optional[Dict[str, Any]] = None,
 ) -> int:
+    """Persist a script and optionally an initial run's eco-stats.
+
+    Returns the new script_id. If `eco_stats` is provided we persist a
+    corresponding run row after creating the script.
+    """
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -84,6 +100,10 @@ def save_script(
 
 
 def list_scripts() -> List[Dict[str, Any]]:
+    """Return a list of saved scripts (id, title, created_at) ordered by newest.
+
+    The returned items are plain dictionaries suitable for JSON serialization.
+    """
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -96,6 +116,7 @@ def list_scripts() -> List[Dict[str, Any]]:
 
 
 def get_script(script_id: int) -> Optional[Dict[str, Any]]:
+    """Fetch a single script by id, returning None if not found."""
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -117,6 +138,12 @@ def save_run(
     duration_ms: Optional[int],
     tips: Optional[List[str]] = None,
 ) -> int:
+    """Persist a run row and return its run_id.
+
+    The `tips` argument (if provided) is JSON-serialized into the `tips` TEXT
+    column. Callers should treat this operation as non-fatal for UX: if saving
+    fails, the API should still return the interpreter result.
+    """
     conn = get_conn()
     cur = conn.cursor()
     tips_json = json.dumps(tips or [])
@@ -144,6 +171,10 @@ def save_run(
 
 
 def list_runs(script_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    """List run rows, optionally filtering by script_id.
+
+    Each returned dict has parsed `tips` as a Python list.
+    """
     conn = get_conn()
     cur = conn.cursor()
     if script_id:
@@ -170,6 +201,7 @@ def list_runs(script_id: Optional[int] = None) -> List[Dict[str, Any]]:
         try:
             d['tips'] = json.loads(d.get('tips') or '[]')
         except Exception:
+            # tolerate corrupt JSON in the DB by returning an empty list
             d['tips'] = []
         out.append(d)
     return out

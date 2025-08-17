@@ -1,0 +1,33 @@
+name: Stress Tests
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * 0' # weekly at 03:00 UTC on Sundays
+
+jobs:
+  stress-tests:
+    name: Run stress tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.12]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies for stress tests
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f backend/requirements.txt ]; then pip install -r backend/requirements.txt; fi
+          pip install pytest requests uvicorn
+
+      - name: Run stress tests (marker=stress)
+        run: |
+          pytest -m stress backend/tests -q
