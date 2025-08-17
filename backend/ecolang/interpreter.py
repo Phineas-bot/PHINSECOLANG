@@ -10,6 +10,7 @@ from . import subprocess_runner
 class EvalError(Exception):
     pass
 
+
 class SafeEvaluator(ast.NodeVisitor):
     def __init__(self, env: Dict[str, Any]):
         self.env = env
@@ -32,11 +33,11 @@ class SafeEvaluator(ast.NodeVisitor):
 
     def visit_Compare(self, node):
         # support simple comparisons: left <op> right (single comparator)
-        left = self.visit(node.left)
         if len(node.ops) != 1 or len(node.comparators) != 1:
             raise EvalError("Chained comparisons not supported")
-        op = node.ops[0]
+        left = self.visit(node.left)
         right = self.visit(node.comparators[0])
+        op = node.ops[0]
         if isinstance(op, ast.Eq):
             return left == right
         if isinstance(op, ast.NotEq):
@@ -68,9 +69,9 @@ class SafeEvaluator(ast.NodeVisitor):
     def visit_Name(self, node):
         if node.id in self.env:
             return self.env[node.id]
-        if node.id == 'true':
+        if node.id == "true":
             return True
-        if node.id == 'false':
+        if node.id == "false":
             return False
         raise EvalError(f"Undefined variable '{node.id}'")
 
@@ -83,7 +84,7 @@ class SafeEvaluator(ast.NodeVisitor):
 
 def eval_expr(expr: str, env: Dict[str, Any]):
     try:
-        tree = ast.parse(expr, mode='eval')
+        tree = ast.parse(expr, mode="eval")
     except SyntaxError as e:
         raise EvalError(f"Syntax error in expression: {expr}") from e
     evaluator = SafeEvaluator(env)
@@ -94,13 +95,13 @@ class Interpreter:
     def __init__(self):
         # Default tunables from spec
         self.ops_map = {
-            'print': 50,
-            'loop_check': 5,
-            'math': 10,
-            'assign': 5,
-            'io': 200,
-            'optimize': 1000,
-            'other': 5,
+            "print": 50,
+            "loop_check": 5,
+            "math": 10,
+            "assign": 5,
+            "io": 200,
+            "optimize": 1000,
+            "other": 5,
         }
         self.energy_per_op_J = 1e-9
         self.idle_power_W = 0.5
@@ -120,14 +121,274 @@ class Interpreter:
         The original implementation used Interpreter().run directly; this
         helper keeps the behaviour but centralizes the call site.
         """
-        return Interpreter().run(
-            code,
+        return Interpreter().run(code, inputs=inputs, settings=settings)
+
+    def _handle_if(  # noqa: C901
+        self,
+        lines: List[str],
+        i: int,
+        env: Dict[str, Any],
+        inputs: Dict[str, Any],
+        output_lines: List[str],
+        warnings: List[str],
+        total_ops: int,
+        ops_scale: float,
+    ) -> Tuple[int, List[str], List[str], int, Dict[str, Any]]:
+        """Evaluate an if/then/else block starting at index i.
+
+        Returns (new_i, output_lines_add, warnings_add, total_ops_delta, error_or_none)
+        """
+        line = lines[i].strip()
+        cond_expr = line[3:-5].strip()
+        try:
+            block, end_idx = self._extract_block_for_run(lines, i + 1)
+        except EvalError as e:
+            return (
+                end_idx if 'end_idx' in locals() else i,
+                [],
+                [],
+                0,
+                {"code": "SYNTAX_ERROR", "message": str(e)},
+            )
+
+        # find optional else inside block (top-level)
+        else_idx = None
+        depth = 0
+        for j, r in enumerate(block):
+            t = r.strip()
+            if t.startswith("if ") or t.startswith("repeat "):
+                depth += 1
+                continue
+            if t == "end":
+                if depth > 0:
+                    depth -= 1
+                continue
+            if t == "else" and depth == 0:
+                else_idx = j
+                break
+        try:
+            cond_val = eval_expr(cond_expr, env)
+        except EvalError as e:
+            return (i, [], [], 0, {"code": "RUNTIME_ERROR", "message": str(e)})
+
+        if bool(cond_val):
+            exec_block = block[:else_idx] if else_idx is not None else block
+        else:
+            exec_block = block[else_idx + 1 :] if else_idx is not None else []
+
+        sub_code = "\n".join(exec_block)
+        sub_res = self._run_sub_interpreter(
+            sub_code,
             inputs=inputs,
-            settings=settings,
+            settings={
+                "energy_per_op_J": self.energy_per_op_J,
+                "idle_power_W": self.idle_power_W,
+                "co2_per_kwh_g": self.co2_per_kwh_g,
+            },
         )
+        if sub_res.get("errors"):
+            return (i, [], [], 0, sub_res)
+        out_add: List[str] = []
+        if sub_res.get("output"):
+            out_add = sub_res["output"].splitlines()
+        warn_add = sub_res.get("warnings", []) or []
+        ops_delta = sub_res.get("eco", {}).get("total_ops", 0)
+        return (end_idx + 1, out_add, warn_add, ops_delta, None)
+
+    def _handle_repeat(
+        self,
+        lines: List[str],
+        i: int,
+        env: Dict[str, Any],
+        inputs: Dict[str, Any],
+        output_lines: List[str],
+        warnings: List[str],
+        total_ops: int,
+        ops_scale: float,
+    ) -> Tuple[int, List[str], List[str], int, Dict[str, Any]]:
+        """Evaluate a repeat N times block starting at index i.
+
+        Returns (new_i, output_lines_add, warnings_add, total_ops_delta, error_or_none)
+        """
+        line = lines[i].strip()
+        mid = line[len("repeat ") : -len(" times")].strip()
+        try:
+            n = int(mid)
+        except Exception:
+            return (
+                i,
+                [],
+                [],
+                0,
+                {"code": "SYNTAX_ERROR", "message": "Invalid repeat count"},
+            )
+        try:
+            block, end_idx = self._extract_block_for_run(lines, i + 1)
+        except EvalError as e:
+            return (i, [], [], 0, {"code": "SYNTAX_ERROR", "message": str(e)})
+
+        sub_code = "\n".join(block)
+        out_add: List[str] = []
+        warn_add: List[str] = []
+        ops_delta = 0
+        for _ in range(n):
+            if total_ops + ops_delta > self.max_steps:
+                warn_add.append("Step limit exceeded inside repeat; aborted")
+                break
+            ops_delta += int(self.ops_map.get("loop_check", 5) * ops_scale)
+            sub_res = self._run_sub_interpreter(
+                sub_code,
+                inputs=inputs,
+                settings={
+                    "energy_per_op_J": self.energy_per_op_J,
+                    "idle_power_W": self.idle_power_W,
+                    "co2_per_kwh_g": self.co2_per_kwh_g,
+                },
+            )
+            if sub_res.get("errors"):
+                return (i, [], [], 0, sub_res)
+            if sub_res.get("output"):
+                out_add.extend(sub_res["output"].splitlines())
+            warn_add.extend(sub_res.get("warnings", []))
+            ops_delta += sub_res.get("eco", {}).get("total_ops", 0)
+        return (end_idx + 1, out_add, warn_add, ops_delta, None)
+
+    def _find_else_index(self, block: List[str]) -> int:
+        depth = 0
+        for j, r in enumerate(block):
+            t = r.strip()
+            if t.startswith("if ") or t.startswith("repeat "):
+                depth += 1
+                continue
+            if t == "end":
+                if depth > 0:
+                    depth -= 1
+                continue
+            if t == "else" and depth == 0:
+                return j
+        return None  # type: ignore
+
+    def _handle_say(self, line: str, env: Dict[str, Any], ops_scale: float):
+        expr = line[4:].strip()
+        try:
+            val = eval_expr(expr, env)
+        except EvalError as e:
+            return (None, [], [], 0, {"code": "RUNTIME_ERROR", "message": str(e)})
+        output = str(val)
+        ops_delta = int(self.ops_map.get("print", 50) * ops_scale)
+        return (1, [output], [], ops_delta, None)
+
+    def _handle_let(self, line: str, env: Dict[str, Any], ops_scale: float):
+        rest = line[4:].strip()
+        if "=" not in rest:
+            return (
+                None,
+                [],
+                [],
+                0,
+                {"code": "SYNTAX_ERROR", "message": "Expected '=' in let statement"},
+            )
+        name, expr = rest.split("=", 1)
+        name = name.strip()
+        expr = expr.strip()
+        if not name.isidentifier():
+            return (
+                None,
+                [],
+                [],
+                0,
+                {"code": "SYNTAX_ERROR", "message": "Invalid identifier in let"},
+            )
+        try:
+            val = eval_expr(expr, env)
+        except EvalError as e:
+            return (None, [], [], 0, {"code": "RUNTIME_ERROR", "message": str(e)})
+        env[name] = val
+        ops_delta = int(self.ops_map.get("assign", 5) * ops_scale)
+        return (1, [], [], ops_delta, None)
+
+    def _handle_ask(
+        self,
+        line: str,
+        env: Dict[str, Any],
+        inputs: Dict[str, Any],
+        ops_scale: float,
+    ):
+        name = line[4:].strip()
+        if not name.isidentifier():
+            return (
+                None,
+                [],
+                [],
+                0,
+                {"code": "SYNTAX_ERROR", "message": "Invalid identifier in ask"},
+            )
+        if name in inputs:
+            env[name] = inputs[name]
+        else:
+            return (
+                None,
+                [],
+                [],
+                0,
+                {"code": "RUNTIME_ERROR", "message": f"Missing input for '{name}'"},
+            )
+        ops_delta = int(self.ops_map.get("io", 200) * ops_scale)
+        return (1, [], [], ops_delta, None)
+
+    def _handle_warn(self, line: str, env: Dict[str, Any], ops_scale: float):
+        expr = line[5:].strip()
+        try:
+            val = eval_expr(expr, env)
+        except EvalError as e:
+            return (None, [], [], 0, {"code": "RUNTIME_ERROR", "message": str(e)})
+        warn = str(val)
+        ops_delta = int(self.ops_map.get("other", 5) * ops_scale)
+        return (1, [], [warn], ops_delta, None)
+
+    def _handle_ecotip(self, total_ops: int, ops_scale: float):
+        tips = [
+            "Turn off unused devices",
+            "Reduce loop counts",
+            "Prefer simpler math operations",
+        ]
+        tip = tips[total_ops % len(tips)]
+        ops_delta = int(self.ops_map.get("other", 5) * ops_scale)
+        return (1, [f"ecoTip: {tip}"], [], ops_delta, None)
+
+    def _extract_block_for_run(self, lines: List[str], start_idx: int) -> Tuple[List[str], int]:
+        """Extract lines until matching 'end', handling nested blocks.
+        Returns (block_lines, index_of_end_line). This mirrors the local
+        `extract_block` used inside `run` so helper methods can reuse it.
+        """
+        block: List[str] = []
+        depth = 0
+        j = start_idx
+        while j < len(lines):
+            raw = lines[j]
+            txt = raw.strip()
+            # track nested starts
+            if txt.startswith("if ") or txt.startswith("repeat "):
+                depth += 1
+                block.append(raw)
+            elif txt == "end":
+                if depth == 0:
+                    return block, j
+                depth -= 1
+                block.append(raw)
+            else:
+                block.append(raw)
+            j += 1
+        # if we reach here, unmatched block
+        raise EvalError("Missing end for block")
 
 
-    def run(self, code: str, inputs: Dict[str, Any] = None, settings: Dict[str, Any] = None) -> Dict[str, Any]:
+    def run(  # noqa: C901
+        self,
+        code: str,
+        inputs: Dict[str, Any] = None,
+        settings: Dict[str, Any] = None,
+    ) -> Dict[str, Any]:
         # Avoid mutable defaults
         if inputs is None:
             inputs = {}
@@ -163,7 +424,13 @@ class Interpreter:
                     "errors": payload.get("error"),
                 }
             except Exception:
-                return {"output": out, "warnings": [], "eco": None, "errors": None}
+                return {
+                    "output": out,
+                    "warnings": [],
+                    "eco": None,
+                    "errors": None,
+                }
+
         start_time = time.time()
         env: Dict[str, Any] = {}
         output_lines: List[str] = []
@@ -173,9 +440,9 @@ class Interpreter:
         ops_scale = 1.0
 
         # apply settings
-        self.energy_per_op_J = settings.get('energy_per_op_J', self.energy_per_op_J)
-        self.idle_power_W = settings.get('idle_power_W', self.idle_power_W)
-        self.co2_per_kwh_g = settings.get('co2_per_kwh_g', self.co2_per_kwh_g)
+        self.energy_per_op_J = settings.get("energy_per_op_J", self.energy_per_op_J)
+        self.idle_power_W = settings.get("idle_power_W", self.idle_power_W)
+        self.co2_per_kwh_g = settings.get("co2_per_kwh_g", self.co2_per_kwh_g)
 
         lines = code.splitlines()
 
@@ -183,161 +450,150 @@ class Interpreter:
             """Extract lines until matching 'end', handling nested blocks.
             Returns (block_lines, index_of_end_line).
             """
-            block = []
+            block: List[str] = []
             depth = 0
-            i = start_idx
-            while i < len(lines):
-                raw = lines[i]
+            j = start_idx
+            while j < len(lines):
+                raw = lines[j]
                 txt = raw.strip()
                 # track nested starts
-                if txt.startswith('if ') or txt.startswith('repeat '):
+                if txt.startswith("if ") or txt.startswith("repeat "):
                     depth += 1
                     block.append(raw)
-                elif txt == 'end':
+                elif txt == "end":
                     if depth == 0:
-                        return block, i
-                    else:
-                        depth -= 1
-                        block.append(raw)
+                        return block, j
+                    depth -= 1
+                    block.append(raw)
                 else:
                     block.append(raw)
-                i += 1
+                j += 1
             # if we reach here, unmatched block
-            raise EvalError('Missing end for block')
+            raise EvalError("Missing end for block")
 
         i = 0
         while i < len(lines):
             raw = lines[i]
             if steps > self.max_steps:
-                warnings.append('Step limit exceeded; execution aborted')
+                warnings.append("Step limit exceeded; execution aborted")
                 break
             line = raw.strip()
             # ignore comments and blank lines
-            if not line or line.startswith('#'):
+            if not line or line.startswith("#"):
                 i += 1
                 continue
 
             # increment for statement dispatch
             steps += 1
-            total_ops += self.ops_map.get('other', 5)
+            total_ops += self.ops_map.get("other", 5)
 
             # SAY
-            if line.startswith('say '):
-                expr = line[4:].strip()
-                try:
-                    val = eval_expr(expr, env)
-                except EvalError as e:
-                    return {"output": "\n".join(output_lines), "warnings": warnings, "eco": None, "errors": {"code":"RUNTIME_ERROR","message":str(e)}}
-                output = str(val)
-                output_lines.append(output)
-                total_ops += int(self.ops_map.get('print', 50) * ops_scale)
-                # enforce max output length
+            if line.startswith("say "):
+                res = self._handle_say(line, env, ops_scale)
+                if res[4]:
+                    return {
+                        "output": "\n".join(output_lines),
+                        "warnings": warnings,
+                        "eco": None,
+                        "errors": res[4],
+                    }
+                _, out_add, warn_add, ops_delta, _ = res
+                if out_add:
+                    output_lines.extend(out_add)
+                if warn_add:
+                    warnings.extend(warn_add)
+                total_ops += ops_delta
                 if sum(len(s) for s in output_lines) > self.max_output_chars:
-                    warnings.append('Output truncated (too long)')
+                    warnings.append("Output truncated (too long)")
                     break
                 i += 1
                 continue
 
-            # LET
-            if line.startswith('let '):
-                rest = line[4:].strip()
-                if '=' not in rest:
+            if line.startswith("let "):
+                res = self._handle_let(line, env, ops_scale)
+                if res[4]:
+                    return {
+                        "output": "\n".join(output_lines),
+                        "warnings": warnings,
+                        "eco": None,
+                        "errors": res[4],
+                    }
+                _, out_add, warn_add, ops_delta, _ = res
+                if out_add:
+                    output_lines.extend(out_add)
+                if warn_add:
+                    warnings.extend(warn_add)
+                total_ops += ops_delta
+                i += 1
+                continue
+
+            if line.startswith("ask "):
+                res = self._handle_ask(line, env, inputs, ops_scale)
+                if res[4]:
+                    return {
+                        "output": "\n".join(output_lines),
+                        "warnings": warnings,
+                        "eco": None,
+                        "errors": res[4],
+                    }
+                _, out_add, warn_add, ops_delta, _ = res
+                if out_add:
+                    output_lines.extend(out_add)
+                if warn_add:
+                    warnings.extend(warn_add)
+                total_ops += ops_delta
+                i += 1
+                continue
+
+            if line.startswith("warn "):
+                res = self._handle_warn(line, env, ops_scale)
+                if res[4]:
+                    return {
+                        "output": "\n".join(output_lines),
+                        "warnings": warnings,
+                        "eco": None,
+                        "errors": res[4],
+                    }
+                _, out_add, warn_add, ops_delta, _ = res
+                if out_add:
+                    output_lines.extend(out_add)
+                if warn_add:
+                    warnings.extend(warn_add)
+                total_ops += ops_delta
+                i += 1
+                continue
+
+            if line == "ecoTip":
+                (
+                    _,
+                    out_add,
+                    warn_add,
+                    ops_delta,
+                    _,
+                ) = self._handle_ecotip(total_ops, ops_scale)
+                if out_add:
+                    output_lines.extend(out_add)
+                if warn_add:
+                    warnings.extend(warn_add)
+                total_ops += ops_delta
+                i += 1
+                continue
+
+            # SAVEPOWER
+            if line.startswith("savePower "):
+                val = line[len("savePower ") :].strip()
+                try:
+                    lvl = float(val)
+                except Exception:
                     return {
                         "output": "\n".join(output_lines),
                         "warnings": warnings,
                         "eco": None,
                         "errors": {
                             "code": "SYNTAX_ERROR",
-                            "message": "Expected '=' in let statement",
+                            "message": "Invalid number for savePower",
                         },
                     }
-                name, expr = rest.split('=', 1)
-                name = name.strip()
-                expr = expr.strip()
-                if not name.isidentifier():
-                    return {
-                        "output": "\n".join(output_lines),
-                        "warnings": warnings,
-                        "eco": None,
-                        "errors": {"code": "SYNTAX_ERROR", "message": "Invalid identifier in let"},
-                    }
-                try:
-                    val = eval_expr(expr, env)
-                except EvalError as e:
-                    return {
-                        "output": "\n".join(output_lines),
-                        "warnings": warnings,
-                        "eco": None,
-                        "errors": {"code": "RUNTIME_ERROR", "message": str(e)},
-                    }
-                env[name] = val
-                total_ops += int(self.ops_map.get('assign',5) * ops_scale)
-                i += 1
-                continue
-
-            # ASK
-            if line.startswith('ask '):
-                name = line[4:].strip()
-                if not name.isidentifier():
-                    return {
-                        "output": "\n".join(output_lines),
-                        "warnings": warnings,
-                        "eco": None,
-                        "errors": {"code": "SYNTAX_ERROR", "message": "Invalid identifier in ask"},
-                    }
-                if name in inputs:
-                    env[name] = inputs[name]
-                else:
-                    return {
-                        "output": "\n".join(output_lines),
-                        "warnings": warnings,
-                        "eco": None,
-                        "errors": {
-                            "code": "RUNTIME_ERROR",
-                            "message": f"Missing input for '{name}'",
-                        },
-                    }
-                total_ops += int(self.ops_map.get('io',200) * ops_scale)
-                i += 1
-                continue
-
-            # WARN
-            if line.startswith('warn '):
-                expr = line[5:].strip()
-                try:
-                    val = eval_expr(expr, env)
-                except EvalError as e:
-                    return {
-                        "output": "\n".join(output_lines),
-                        "warnings": warnings,
-                        "eco": None,
-                        "errors": {"code": "RUNTIME_ERROR", "message": str(e)},
-                    }
-                warnings.append(str(val))
-                total_ops += int(self.ops_map.get('other',5) * ops_scale)
-                i += 1
-                continue
-
-            # ECOTIP
-            if line == 'ecoTip':
-                tips = [
-                    'Turn off unused devices',
-                    'Reduce loop counts',
-                    'Prefer simpler math operations'
-                ]
-                tip = tips[total_ops % len(tips)]
-                output_lines.append(f"ecoTip: {tip}")
-                i += 1
-                total_ops += int(self.ops_map.get('other',5) * ops_scale)
-                continue
-
-            # SAVEPOWER
-            if line.startswith('savePower '):
-                val = line[len('savePower '):].strip()
-                try:
-                    lvl = float(val)
-                except Exception:
-                    return {"output": "\n".join(output_lines), "warnings": warnings, "eco": None, "errors": {"code":"SYNTAX_ERROR","message":"Invalid number for savePower"}}
                 # apply a simple ops scaling: more savePower => smaller ops cost (demo)
                 ops_scale = max(0.1, 1.0 - (lvl * 0.01))
                 warnings.append(f"savePower applied: level {lvl}")
@@ -345,99 +601,70 @@ class Interpreter:
                 continue
 
             # IF ... THEN ... (optional ELSE) ... END
-            if line.startswith('if ') and line.endswith(' then'):
-                cond_expr = line[3:-5].strip()
-                # extract block after this line
-                try:
-                    block, end_idx = extract_block(i+1)
-                except EvalError as e:
-                    return {"output": "\n".join(output_lines), "warnings": warnings, "eco": None, "errors": {"code":"SYNTAX_ERROR","message":str(e)}}
-                # find optional else inside block (top-level)
-                else_idx = None
-                depth = 0
-                for j, r in enumerate(block):
-                    t = r.strip()
-                    if t.startswith('if ') or t.startswith('repeat '):
-                        depth += 1
-                    elif t == 'end':
-                        if depth > 0:
-                            depth -= 1
-                    elif t == 'else' and depth == 0:
-                        else_idx = j
-                        break
-                try:
-                    cond_val = eval_expr(cond_expr, env)
-                except EvalError as e:
-                    return {"output": "\n".join(output_lines), "warnings": warnings, "eco": None, "errors": {"code":"RUNTIME_ERROR","message":str(e)}}
-                if bool(cond_val):
-                    exec_block = block[:else_idx] if else_idx is not None else block
-                else:
-                    exec_block = block[else_idx+1:] if else_idx is not None else []
-                # execute the chosen block lines (simple recursive evaluation)
-                sub_code = "\n".join(exec_block)
-                # recursion: run on sub_code but preserve env, collect outputs
-                sub_res = self._run_sub_interpreter(
-                    sub_code,
-                    inputs=inputs,
-                    settings={
-                        'energy_per_op_J': self.energy_per_op_J,
-                        'idle_power_W': self.idle_power_W,
-                        'co2_per_kwh_g': self.co2_per_kwh_g,
-                    },
+            if line.startswith("if ") and line.endswith(" then"):
+                # call helper to handle the if block
+                new_i, out_add, warn_add, ops_delta, err = self._handle_if(
+                    lines,
+                    i,
+                    env,
+                    inputs,
+                    output_lines,
+                    warnings,
+                    total_ops,
+                    ops_scale,
                 )
-                # merge sub results
-                if sub_res.get('errors'):
-                    return sub_res
-                if sub_res.get('output'):
-                    output_lines.extend(sub_res['output'].splitlines())
-                warnings.extend(sub_res.get('warnings', []))
-                total_ops += sub_res.get('eco', {}).get('total_ops', 0)
-                i = end_idx + 1
-                continue
-
-            # REPEAT N times ... END
-            if line.startswith('repeat ' ) and line.endswith(' times'):
-                mid = line[len('repeat '):-len(' times')].strip()
-                try:
-                    n = int(mid)
-                except Exception:
-                    return {"output": "\n".join(output_lines), "warnings": warnings, "eco": None, "errors": {"code":"SYNTAX_ERROR","message":"Invalid repeat count"}}
-                try:
-                    block, end_idx = extract_block(i + 1)
-                except EvalError as e:
+                if err:
                     return {
                         "output": "\n".join(output_lines),
                         "warnings": warnings,
                         "eco": None,
-                        "errors": {"code": "SYNTAX_ERROR", "message": str(e)},
+                        "errors": err,
                     }
-                sub_code = "\n".join(block)
-                # run the block n times
-                for _ in range(n):
-                    if steps > self.max_steps:
-                        warnings.append('Step limit exceeded inside repeat; aborted')
-                        break
-                    total_ops += int(self.ops_map.get('loop_check', 5) * ops_scale)
-                    sub_res = self._run_sub_interpreter(
-                        sub_code,
-                        inputs=inputs,
-                        settings={
-                            'energy_per_op_J': self.energy_per_op_J,
-                            'idle_power_W': self.idle_power_W,
-                            'co2_per_kwh_g': self.co2_per_kwh_g,
-                        },
-                    )
-                    if sub_res.get('errors'):
-                        return sub_res
-                    if sub_res.get('output'):
-                        output_lines.extend(sub_res['output'].splitlines())
-                    warnings.extend(sub_res.get('warnings', []))
-                    total_ops += sub_res.get('eco', {}).get('total_ops', 0)
-                i = end_idx + 1
+                if out_add:
+                    output_lines.extend(out_add)
+                if warn_add:
+                    warnings.extend(warn_add)
+                total_ops += ops_delta
+                i = new_i
+                continue
+
+            # REPEAT N times ... END
+            if line.startswith("repeat ") and line.endswith(" times"):
+                new_i, out_add, warn_add, ops_delta, err = self._handle_repeat(
+                    lines,
+                    i,
+                    env,
+                    inputs,
+                    output_lines,
+                    warnings,
+                    total_ops,
+                    ops_scale,
+                )
+                if err:
+                    return {
+                        "output": "\n".join(output_lines),
+                        "warnings": warnings,
+                        "eco": None,
+                        "errors": err,
+                    }
+                if out_add:
+                    output_lines.extend(out_add)
+                if warn_add:
+                    warnings.extend(warn_add)
+                total_ops += ops_delta
+                i = new_i
                 continue
 
             # unknown statement
-            return {"output": "\n".join(output_lines), "warnings": warnings, "eco": None, "errors": {"code":"SYNTAX_ERROR","message":f"Unknown statement: {line}"}}
+            return {
+                "output": "\n".join(output_lines),
+                "warnings": warnings,
+                "eco": None,
+                "errors": {
+                    "code": "SYNTAX_ERROR",
+                    "message": f"Unknown statement: {line}",
+                },
+            }
 
         duration_s = max(0.000001, time.time() - start_time)
         # compute eco stats
@@ -447,18 +674,18 @@ class Interpreter:
         co2_g = total_energy_kWh * self.co2_per_kwh_g
 
         eco = {
-            'total_ops': total_ops,
-            'energy_J': compute_energy_J + runtime_overhead_J,
-            'energy_kWh': total_energy_kWh,
-            'co2_g': co2_g,
-            'tips': []
+            "total_ops": total_ops,
+            "energy_J": compute_energy_J + runtime_overhead_J,
+            "energy_kWh": total_energy_kWh,
+            "co2_g": co2_g,
+            "tips": [],
         }
         # simple tip
         if total_ops > 1000:
-            eco['tips'].append(
-                'Consider reducing loop iterations or heavy math operations'
+            eco["tips"].append(
+                "Consider reducing loop iterations or heavy math operations"
             )
-            warnings.append('High estimated energy use')
+            warnings.append("High estimated energy use")
 
         return {
             "output": "\n".join(output_lines) + ("\n" if output_lines else ""),
@@ -466,3 +693,4 @@ class Interpreter:
             "eco": eco,
             "errors": None,
         }
+
