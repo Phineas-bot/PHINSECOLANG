@@ -7,9 +7,10 @@ globals, and print JSON to stdout {"result": ..., "error": ...}
 import ast
 import json
 import sys
+from typing import Any, Dict, Tuple, Optional
 
 
-def safe_exec(code_str: str):
+def safe_exec(code_str: str) -> Tuple[Optional[Any], Optional[str]]:
     # Very small sandbox: only allow expressions and print via a captured output.
     # For now, we'll eval expressions; do not use in production for untrusted code.
     try:
@@ -25,8 +26,8 @@ def safe_exec(code_str: str):
             return None, 'attribute access not allowed'
 
     # Run the code in a minimal namespace
-    g = {"__builtins__": {}}
-    local_ns = {}
+    g: Dict[str, Any] = {"__builtins__": {}}
+    local_ns: Dict[str, Any] = {}
     try:
         exec(compile(node, '<string>', 'exec'), g, local_ns)
         return local_ns.get('result', None), None
@@ -34,11 +35,11 @@ def safe_exec(code_str: str):
         return None, f'error: {e}'
 
 
-def main():
+def main() -> None:
     raw = sys.stdin.read()
     try:
         payload = json.loads(raw)
-        code = payload.get('code','')
+        code = payload.get('code', '')
     except Exception as e:
         print(json.dumps({'result': None, 'error': f'bad_payload: {e}'}))
         sys.exit(1)

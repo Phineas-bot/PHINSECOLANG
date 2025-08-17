@@ -1,7 +1,7 @@
 import ast
 import json
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 from . import subprocess_runner
 
@@ -133,7 +133,7 @@ class Interpreter:
         warnings: List[str],
         total_ops: int,
         ops_scale: float,
-    ) -> Tuple[int, List[str], List[str], int, Dict[str, Any]]:
+    ) -> Tuple[int, int, List[str], List[str], Optional[Dict[str, Any]]]:
         """Evaluate an if/then/else block starting at index i.
 
         Returns (new_i, output_lines_add, warnings_add, total_ops_delta, error_or_none)
@@ -205,7 +205,7 @@ class Interpreter:
         warnings: List[str],
         total_ops: int,
         ops_scale: float,
-    ) -> Tuple[int, List[str], List[str], int, Dict[str, Any]]:
+    ) -> Tuple[int, int, List[str], List[str], Optional[Dict[str, Any]]]:
         """Evaluate a repeat N times block starting at index i.
 
         Returns (new_i, output_lines_add, warnings_add, total_ops_delta, error_or_none)
@@ -253,7 +253,7 @@ class Interpreter:
             ops_delta += sub_res.get("eco", {}).get("total_ops", 0)
         return (end_idx + 1, ops_delta, out_add, warn_add, None)
 
-    def _find_else_index(self, block: List[str]) -> int:
+    def _find_else_index(self, block: List[str]) -> Optional[int]:
         depth = 0
         for j, r in enumerate(block):
             t = r.strip()
@@ -268,7 +268,7 @@ class Interpreter:
                 return j
         return None  # type: ignore
 
-    def _handle_say(self, line: str, env: Dict[str, Any], ops_scale: float):
+    def _handle_say(self, line: str, env: Dict[str, Any], ops_scale: float) -> Tuple[Optional[int], List[str], List[str], int, Optional[Dict[str, Any]]]:
         expr = line[4:].strip()
         try:
             val = eval_expr(expr, env)
@@ -278,7 +278,7 @@ class Interpreter:
         ops_delta = int(self.ops_map.get("print", 50) * ops_scale)
         return (1, [output], [], ops_delta, None)
 
-    def _handle_let(self, line: str, env: Dict[str, Any], ops_scale: float):
+    def _handle_let(self, line: str, env: Dict[str, Any], ops_scale: float) -> Tuple[Optional[int], List[str], List[str], int, Optional[Dict[str, Any]]]:
         rest = line[4:].strip()
         if "=" not in rest:
             return (
@@ -313,7 +313,7 @@ class Interpreter:
         env: Dict[str, Any],
         inputs: Dict[str, Any],
         ops_scale: float,
-    ):
+    ) -> Tuple[Optional[int], List[str], List[str], int, Optional[Dict[str, Any]]]:
         name = line[4:].strip()
         if not name.isidentifier():
             return (
@@ -336,7 +336,7 @@ class Interpreter:
         ops_delta = int(self.ops_map.get("io", 200) * ops_scale)
         return (1, [], [], ops_delta, None)
 
-    def _handle_warn(self, line: str, env: Dict[str, Any], ops_scale: float):
+    def _handle_warn(self, line: str, env: Dict[str, Any], ops_scale: float) -> Tuple[Optional[int], List[str], List[str], int, Optional[Dict[str, Any]]]:
         expr = line[5:].strip()
         try:
             val = eval_expr(expr, env)
@@ -346,7 +346,7 @@ class Interpreter:
         ops_delta = int(self.ops_map.get("other", 5) * ops_scale)
         return (1, [], [warn], ops_delta, None)
 
-    def _handle_ecotip(self, total_ops: int, ops_scale: float):
+    def _handle_ecotip(self, total_ops: int, ops_scale: float) -> Tuple[int, List[str], List[str], int, Optional[Dict[str, Any]]]:
         tips = [
             "Turn off unused devices",
             "Reduce loop counts",
@@ -397,7 +397,7 @@ class Interpreter:
         warnings: List[str],
         total_ops: int,
         ops_scale: float,
-    ) -> Tuple[int, int, List[str], List[str], Dict[str, Any]]:
+    ) -> Tuple[int, int, List[str], List[str], Optional[Dict[str, Any]]]:
         """Dispatch a single statement at index `i`.
 
         Returns (new_i, ops_delta, out_add, warn_add, error_or_none)
@@ -473,7 +473,7 @@ class Interpreter:
         env: Dict[str, Any],
         inputs: Dict[str, Any],
         ops_scale: float,
-    ):
+    ) -> Tuple[int, int, List[str], List[str], Optional[Dict[str, Any]]]:
         res = self._handle_ask(line, env, inputs, ops_scale)
         if res[4]:
             return i, 0, [], [], res[4]
@@ -595,7 +595,7 @@ class Interpreter:
             "errors": None,
         }
 
-    def _dispatch_ecotip(self, total_ops: int, i: int, ops_scale: float):
+    def _dispatch_ecotip(self, total_ops: int, i: int, ops_scale: float) -> Tuple[int, int, List[str], List[str], Optional[Dict[str, Any]]]:
         res = self._handle_ecotip(total_ops, ops_scale)
         if res[4]:
             return i, 0, [], [], res[4]
@@ -659,8 +659,8 @@ class Interpreter:
     def run(
         self,
         code: str,
-        inputs: Dict[str, Any] = None,
-        settings: Dict[str, Any] = None,
+        inputs: Optional[Dict[str, Any]] = None,
+        settings: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         output_lines, warnings, total_ops, maybe_err, start_time = (
             self._prepare_and_execute(code, inputs, settings)
@@ -676,16 +676,16 @@ class Interpreter:
         return self._finalize_run(output_lines, warnings, total_ops, start_time)
 
     def _prepare_and_execute(
-        self, code: str, inputs: Dict[str, Any], settings: Dict[str, Any]
+        self, code: str, inputs: Optional[Dict[str, Any]], settings: Optional[Dict[str, Any]]
     ) -> Tuple[List[str], List[str], int, Dict[str, Any], float]:
         # thin wrapper: validation and delegation to core executor
-        if inputs is None:
-            inputs = {}
-        if settings is None:
-            settings = {}
+        # normalize optionals into typed locals for mypy
+        inputs_local: Dict[str, Any] = inputs or {}
+        settings_local: Dict[str, Any] = settings or {}
+
         # handle subprocess fast-path
-        if settings.get("use_subprocess"):
-            res = self._maybe_run_in_subprocess(settings, code)
+        if settings_local.get("use_subprocess"):
+            res = self._maybe_run_in_subprocess(settings_local, code)
             return (
                 res.get("output", "").splitlines(),
                 res.get("warnings", []),
@@ -693,8 +693,9 @@ class Interpreter:
                 res.get("errors") or {},
                 time.time(),
             )
-        # otherwise delegate heavy work
-        return self._execute_core(code, inputs, settings)
+
+        # otherwise delegate heavy work using typed locals
+        return self._execute_core(code, inputs_local, settings_local)
 
     def _execute_core(
         self, code: str, inputs: Dict[str, Any], settings: Dict[str, Any]
