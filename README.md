@@ -29,3 +29,14 @@ pytest -q
 Notes:
 - The project includes two virtual environments in development (`.venv` for Python 3.12 with FastAPI v0.100/pydantic v2 and `.venv-1` with older pins). Use `.venv` for the latest API compatibility.
 # PHINSECOLANG
+
+![CI](https://github.com/Phineas-bot/PHINSECOLANG/actions/workflows/ci.yml/badge.svg)
+
+Local developer setup (pre-commit):
+
+```powershell
+# install pre-commit in your venv
+pip install pre-commit
+pre-commit install
+pre-commit run --all-files
+```

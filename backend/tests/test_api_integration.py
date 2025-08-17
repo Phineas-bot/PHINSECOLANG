@@ -1,11 +1,34 @@
+"""High-level API integration tests including persistence and script listing."""
+
+import os
+import tempfile
+
 import pytest
 from fastapi.testclient import TestClient
+
+from backend import db
 from backend.app.main import app
 
 
 @pytest.fixture(scope="module")
 def client():
-    return TestClient(app)
+    # create a temporary DB file for isolation
+    fd, path = tempfile.mkstemp(prefix="ecolang_test_", suffix=".db")
+    os.close(fd)
+    os.environ['ECOLANG_DB_PATH'] = path
+    # re-import / init DB
+    db.init_db()
+    client = TestClient(app)
+    yield client
+    try:
+        client.close()
+    except Exception:
+        pass
+    # cleanup
+    try:
+        os.remove(path)
+    except Exception:
+        pass
 
 
 def test_save_and_run_and_stats(client):
