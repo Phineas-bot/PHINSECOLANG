@@ -1,3 +1,5 @@
+"""Security-oriented tests ensuring dangerous constructs are rejected."""
+
 from backend.ecolang.interpreter import Interpreter, EvalError
 
 

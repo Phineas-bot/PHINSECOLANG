@@ -26,8 +26,18 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           if [ -f backend/requirements.txt ]; then pip install -r backend/requirements.txt; fi
+          # install runtime deps needed for stress test and basic tooling
           pip install pytest requests uvicorn
+          # install optional lint/type tools (non-fatal if absent)
+          pip install ruff mypy || true
 
       - name: Run stress tests (marker=stress)
         run: |
+          # run quick lint/type checks to catch regressions early
+          ruff --version || true
+          ruff backend || true
+          mypy --version || true
+          mypy backend || true
+
+          # finally run the process-level stress tests
           pytest -m stress backend/tests -q

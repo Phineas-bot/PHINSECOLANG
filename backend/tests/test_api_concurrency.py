@@ -1,3 +1,5 @@
+"""Concurrency-focused tests exercising the API's per-request isolation."""
+
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from fastapi.testclient import TestClient
 from backend.app.main import app

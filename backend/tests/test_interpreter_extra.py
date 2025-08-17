@@ -1,3 +1,5 @@
+"""Additional interpreter tests covering nested blocks and edge cases."""
+
 from backend.ecolang.interpreter import Interpreter
 
 

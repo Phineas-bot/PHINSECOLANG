@@ -1,3 +1,5 @@
+"""Unit tests validating the in-process interpreter behaviour and errors."""
+
 from backend.ecolang.interpreter import Interpreter
 
 

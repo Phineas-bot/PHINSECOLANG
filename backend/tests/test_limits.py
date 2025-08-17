@@ -1,3 +1,5 @@
+"""Tests for interpreter runtime limits (time, steps, output caps)."""
+
 from backend.ecolang.interpreter import Interpreter
 
 

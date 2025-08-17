@@ -1,3 +1,5 @@
+"""Integration tests for API limit behaviours exposed at /run."""
+
 from fastapi.testclient import TestClient
 from backend.app.main import app
 

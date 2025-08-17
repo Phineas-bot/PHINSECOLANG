@@ -1,3 +1,5 @@
+"""High-level API integration tests including persistence and script listing."""
+
 import os
 import tempfile
 
