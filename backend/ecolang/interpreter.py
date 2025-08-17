@@ -87,6 +87,35 @@ def eval_expr(expr: str, env: Dict[str, Any]):
         tree = ast.parse(expr, mode="eval")
     except SyntaxError as e:
         raise EvalError(f"Syntax error in expression: {expr}") from e
+    # Validate AST: reject dangerous constructs (calls, attributes, imports,
+    # comprehensions, lambdas, function/class defs, subscripts, etc.).
+    for node in ast.walk(tree):
+        if isinstance(
+            node,
+            (
+                ast.Call,
+                ast.Attribute,
+                ast.Import,
+                ast.ImportFrom,
+                ast.Lambda,
+                ast.DictComp,
+                ast.ListComp,
+                ast.SetComp,
+                ast.GeneratorExp,
+                ast.Yield,
+                ast.YieldFrom,
+                ast.FunctionDef,
+                ast.ClassDef,
+                ast.Subscript,
+                ast.Global,
+                ast.Nonlocal,
+            ),
+        ):
+            raise EvalError(f"Unsupported expression element: {type(node).__name__}")
+        # explicitly disallow names that can be abused
+        if isinstance(node, ast.Name) and node.id in ("__import__", "eval", "exec", "open", "os", "sys"):
+            raise EvalError(f"Unsupported name in expression: {node.id}")
+
     evaluator = SafeEvaluator(env)
     return evaluator.visit(tree)
 
@@ -108,6 +137,8 @@ class Interpreter:
         self.co2_per_kwh_g = 475
         # limits
         self.max_steps = 100000
+        self.max_loop = 10000
+        self.max_time_s = 1.5
         self.max_output_chars = 5000
 
     def _run_sub_interpreter(
@@ -125,6 +156,11 @@ class Interpreter:
         # Run a fresh Interpreter but seed its environment so nested blocks
         # can access variables from the outer scope.
         it = Interpreter()
+        # inherit limits from parent unless overridden in settings
+        it.max_steps = settings.get("max_steps", self.max_steps)
+        it.max_loop = settings.get("max_loop", self.max_loop)
+        it.max_time_s = settings.get("max_time_s", self.max_time_s)
+        it.max_output_chars = settings.get("max_output_chars", self.max_output_chars)
         out_lines, warnings, total_ops, maybe_err, start_time = it._execute_core(
             code, inputs, settings, initial_env=env
         )
@@ -255,7 +291,10 @@ class Interpreter:
             block, end_idx = self._extract_block_for_run(lines, i + 1)
         except EvalError as e:
             return (i, 0, [], [], {"code": "SYNTAX_ERROR", "message": str(e)})
-
+        # enforce configured max loop count
+        if n > self.max_loop:
+            warn_msg = f"Repeat count limited to {self.max_loop}"
+            n = self.max_loop
         sub_code = "\n".join(block)
         out_add: List[str] = []
         warn_add: List[str] = []
@@ -281,6 +320,9 @@ class Interpreter:
                 out_add.extend(sub_res["output"].splitlines())
             warn_add.extend(sub_res.get("warnings", []))
             ops_delta += sub_res.get("eco", {}).get("total_ops", 0)
+        # if we limited the repeat count, include the warning
+        if 'warn_msg' in locals():
+            warn_add.insert(0, warn_msg)
         return (end_idx + 1, ops_delta, out_add, warn_add, None)
 
     def _find_else_index(self, block: List[str]) -> Optional[int]:
@@ -786,8 +828,13 @@ class Interpreter:
 
         i = 0
         steps_local = 0
+        start_wall = time.time()
         while i < len(lines):
             raw = lines[i]
+            # enforce wall-clock timeout
+            if time.time() - start_wall > self.max_time_s:
+                warnings.append("Time limit exceeded; execution aborted")
+                break
             if steps_local > self.max_steps:
                 warnings.append("Step limit exceeded; execution aborted")
                 break
@@ -812,7 +859,12 @@ class Interpreter:
             if err:
                 return output_lines, warnings, total_ops, {"errors": err}, start_time
             if out_add:
-                output_lines.extend(out_add)
+                # enforce output length cap
+                for o in out_add:
+                    if sum(len(x) for x in output_lines) + len(o) > self.max_output_chars:
+                        warnings.append("Output length limit reached; truncating")
+                        break
+                    output_lines.append(o)
             if warn_add:
                 warnings.extend(warn_add)
             total_ops += ops_delta

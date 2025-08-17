@@ -20,15 +20,16 @@ def safe_exec(code_str: str) -> Tuple[Optional[Any], Optional[str]]:
 
     # Disallow import and attribute access nodes for basic safety
     for n in ast.walk(node):
-        if isinstance(n, (ast.Import, ast.ImportFrom)):
-            return None, 'imports not allowed'
-        if isinstance(n, ast.Attribute):
-            return None, 'attribute access not allowed'
+        if isinstance(n, (ast.Import, ast.ImportFrom, ast.Attribute, ast.Call, ast.Subscript, ast.Lambda, ast.FunctionDef, ast.ClassDef)):
+            return None, f'{type(n).__name__} not allowed'
+        if isinstance(n, ast.Name) and n.id in ("__import__", "eval", "exec", "open", "os", "sys"):
+            return None, f'name {n.id} not allowed'
 
     # Run the code in a minimal namespace
     g: Dict[str, Any] = {"__builtins__": {}}
     local_ns: Dict[str, Any] = {}
     try:
+        # run with a minimal time budget logically enforced by the caller; execute directly
         exec(compile(node, '<string>', 'exec'), g, local_ns)
         return local_ns.get('result', None), None
     except Exception as e:
