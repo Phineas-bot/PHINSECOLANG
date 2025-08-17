@@ -1,7 +1,7 @@
 import ast
 import json
 import time
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import subprocess_runner
 
@@ -115,13 +115,29 @@ class Interpreter:
         code: str,
         inputs: Dict[str, Any],
         settings: Dict[str, Any],
+        env: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Run a fresh Interpreter for nested blocks to preserve state.
 
         The original implementation used Interpreter().run directly; this
         helper keeps the behaviour but centralizes the call site.
         """
-        return Interpreter().run(code, inputs=inputs, settings=settings)
+        # Run a fresh Interpreter but seed its environment so nested blocks
+        # can access variables from the outer scope.
+        it = Interpreter()
+        out_lines, warnings, total_ops, maybe_err, start_time = it._execute_core(
+            code, inputs, settings, initial_env=env
+        )
+        if maybe_err.get("errors"):
+            return {
+                "output": "\n".join(out_lines),
+                "warnings": warnings,
+                "eco": None,
+                "errors": maybe_err.get("errors"),
+            }
+        duration_s = max(0.000001, time.time() - start_time)
+        eco = it._compute_eco(total_ops, duration_s)
+        return {"output": "\n".join(out_lines) + ("\n" if out_lines else ""), "warnings": warnings, "eco": eco, "errors": None}
 
     def _handle_if(  # noqa: C901
         self,
@@ -133,7 +149,13 @@ class Interpreter:
         warnings: List[str],
         total_ops: int,
         ops_scale: float,
-    ) -> Tuple[int, int, List[str], List[str], Optional[Dict[str, Any]]]:
+    ) -> Tuple[
+        int,
+        int,
+        List[str],
+        List[str],
+        Optional[Dict[str, Any]],
+    ]:
         """Evaluate an if/then/else block starting at index i.
 
         Returns (new_i, output_lines_add, warnings_add, total_ops_delta, error_or_none)
@@ -185,6 +207,7 @@ class Interpreter:
                 "idle_power_W": self.idle_power_W,
                 "co2_per_kwh_g": self.co2_per_kwh_g,
             },
+            env=env,
         )
         if sub_res.get("errors"):
             return (i, 0, [], [], sub_res)
@@ -205,7 +228,13 @@ class Interpreter:
         warnings: List[str],
         total_ops: int,
         ops_scale: float,
-    ) -> Tuple[int, int, List[str], List[str], Optional[Dict[str, Any]]]:
+    ) -> Tuple[
+        int,
+        int,
+        List[str],
+        List[str],
+        Optional[Dict[str, Any]],
+    ]:
         """Evaluate a repeat N times block starting at index i.
 
         Returns (new_i, output_lines_add, warnings_add, total_ops_delta, error_or_none)
@@ -244,6 +273,7 @@ class Interpreter:
                     "idle_power_W": self.idle_power_W,
                     "co2_per_kwh_g": self.co2_per_kwh_g,
                 },
+                env=env,
             )
             if sub_res.get("errors"):
                 return (i, 0, [], [], sub_res)
@@ -268,7 +298,9 @@ class Interpreter:
                 return j
         return None  # type: ignore
 
-    def _handle_say(self, line: str, env: Dict[str, Any], ops_scale: float) -> Tuple[Optional[int], List[str], List[str], int, Optional[Dict[str, Any]]]:
+    def _handle_say(
+        self, line: str, env: Dict[str, Any], ops_scale: float
+    ) -> Tuple[Optional[int], List[str], List[str], int, Optional[Dict[str, Any]]]:
         expr = line[4:].strip()
         try:
             val = eval_expr(expr, env)
@@ -278,7 +310,9 @@ class Interpreter:
         ops_delta = int(self.ops_map.get("print", 50) * ops_scale)
         return (1, [output], [], ops_delta, None)
 
-    def _handle_let(self, line: str, env: Dict[str, Any], ops_scale: float) -> Tuple[Optional[int], List[str], List[str], int, Optional[Dict[str, Any]]]:
+    def _handle_let(
+        self, line: str, env: Dict[str, Any], ops_scale: float
+    ) -> Tuple[Optional[int], List[str], List[str], int, Optional[Dict[str, Any]]]:
         rest = line[4:].strip()
         if "=" not in rest:
             return (
@@ -313,7 +347,13 @@ class Interpreter:
         env: Dict[str, Any],
         inputs: Dict[str, Any],
         ops_scale: float,
-    ) -> Tuple[Optional[int], List[str], List[str], int, Optional[Dict[str, Any]]]:
+    ) -> Tuple[
+        Optional[int],
+        List[str],
+        List[str],
+        int,
+        Optional[Dict[str, Any]],
+    ]:
         name = line[4:].strip()
         if not name.isidentifier():
             return (
@@ -336,7 +376,9 @@ class Interpreter:
         ops_delta = int(self.ops_map.get("io", 200) * ops_scale)
         return (1, [], [], ops_delta, None)
 
-    def _handle_warn(self, line: str, env: Dict[str, Any], ops_scale: float) -> Tuple[Optional[int], List[str], List[str], int, Optional[Dict[str, Any]]]:
+    def _handle_warn(
+        self, line: str, env: Dict[str, Any], ops_scale: float
+    ) -> Tuple[Optional[int], List[str], List[str], int, Optional[Dict[str, Any]]]:
         expr = line[5:].strip()
         try:
             val = eval_expr(expr, env)
@@ -346,7 +388,9 @@ class Interpreter:
         ops_delta = int(self.ops_map.get("other", 5) * ops_scale)
         return (1, [], [warn], ops_delta, None)
 
-    def _handle_ecotip(self, total_ops: int, ops_scale: float) -> Tuple[int, List[str], List[str], int, Optional[Dict[str, Any]]]:
+    def _handle_ecotip(
+        self, total_ops: int, ops_scale: float
+    ) -> Tuple[int, List[str], List[str], int, Optional[Dict[str, Any]]]:
         tips = [
             "Turn off unused devices",
             "Reduce loop counts",
@@ -397,7 +441,13 @@ class Interpreter:
         warnings: List[str],
         total_ops: int,
         ops_scale: float,
-    ) -> Tuple[int, int, List[str], List[str], Optional[Dict[str, Any]]]:
+    ) -> Tuple[
+        int,
+        int,
+        List[str],
+        List[str],
+        Optional[Dict[str, Any]],
+    ]:
         """Dispatch a single statement at index `i`.
 
         Returns (new_i, ops_delta, out_add, warn_add, error_or_none)
@@ -473,7 +523,13 @@ class Interpreter:
         env: Dict[str, Any],
         inputs: Dict[str, Any],
         ops_scale: float,
-    ) -> Tuple[int, int, List[str], List[str], Optional[Dict[str, Any]]]:
+    ) -> Tuple[
+        int,
+        int,
+        List[str],
+        List[str],
+        Optional[Dict[str, Any]],
+    ]:
         res = self._handle_ask(line, env, inputs, ops_scale)
         if res[4]:
             return i, 0, [], [], res[4]
@@ -595,7 +651,9 @@ class Interpreter:
             "errors": None,
         }
 
-    def _dispatch_ecotip(self, total_ops: int, i: int, ops_scale: float) -> Tuple[int, int, List[str], List[str], Optional[Dict[str, Any]]]:
+    def _dispatch_ecotip(
+        self, total_ops: int, i: int, ops_scale: float
+    ) -> Tuple[int, int, List[str], List[str], Optional[Dict[str, Any]]]:
         res = self._handle_ecotip(total_ops, ops_scale)
         if res[4]:
             return i, 0, [], [], res[4]
@@ -676,7 +734,10 @@ class Interpreter:
         return self._finalize_run(output_lines, warnings, total_ops, start_time)
 
     def _prepare_and_execute(
-        self, code: str, inputs: Optional[Dict[str, Any]], settings: Optional[Dict[str, Any]]
+        self,
+        code: str,
+        inputs: Optional[Dict[str, Any]],
+        settings: Optional[Dict[str, Any]],
     ) -> Tuple[List[str], List[str], int, Dict[str, Any], float]:
         # thin wrapper: validation and delegation to core executor
         # normalize optionals into typed locals for mypy
@@ -698,14 +759,19 @@ class Interpreter:
         return self._execute_core(code, inputs_local, settings_local)
 
     def _execute_core(
-        self, code: str, inputs: Dict[str, Any], settings: Dict[str, Any]
+        self,
+        code: str,
+        inputs: Dict[str, Any],
+        settings: Dict[str, Any],
+        initial_env: Optional[Dict[str, Any]] = None,
     ) -> Tuple[List[str], List[str], int, Dict[str, Any], float]:
         """Core executor separated to reduce wrapper complexity.
 
         Returns (output_lines, warnings, total_ops, maybe_err, start_time).
         """
         start_time = time.time()
-        env: Dict[str, Any] = {}
+        # seed environment from initial_env for nested interpreters
+        env: Dict[str, Any] = dict(initial_env) if initial_env is not None else {}
         output_lines: List[str] = []
         warnings: List[str] = []
         total_ops = 0

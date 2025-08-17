@@ -7,7 +7,7 @@ globals, and print JSON to stdout {"result": ..., "error": ...}
 import ast
 import json
 import sys
-from typing import Any, Dict, Tuple, Optional
+from typing import Any, Dict, Optional, Tuple
 
 
 def safe_exec(code_str: str) -> Tuple[Optional[Any], Optional[str]]:
