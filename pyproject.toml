@@ -1,5 +1,7 @@
 [tool.ruff]
 line-length = 88
+
+[tool.ruff.lint]
 select = ["E", "F", "W", "C", "B", "TC", "I"]
 
 [tool.mypy]
