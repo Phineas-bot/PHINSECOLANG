@@ -485,7 +485,16 @@ class Interpreter:
         try:
             lvl = float(val)
         except Exception:
-            return i, 0, [], [], {"code": "SYNTAX_ERROR", "message": "Invalid number for savePower"}
+            return (
+                i,
+                0,
+                [],
+                [],
+                {
+                    "code": "SYNTAX_ERROR",
+                    "message": "Invalid number for savePower",
+                },
+            )
         new_scale = max(0.1, 1.0 - (lvl * 0.01))
         # persist new ops scale into env for caller to pick up
         env["_ops_scale"] = new_scale
@@ -535,7 +544,13 @@ class Interpreter:
             ops_scale,
         )
 
-    def _dispatch_simple_prefix(self, line: str, i: int, env: Dict[str, Any], ops_scale: float):
+    def _dispatch_simple_prefix(
+        self,
+        line: str,
+        i: int,
+        env: Dict[str, Any],
+        ops_scale: float,
+    ):
         """Handle simple 'say', 'let', 'warn' prefixes returning a small tuple.
 
         Returns (step_inc, ops_delta, out_add, warn_add, error_or_none).
@@ -559,6 +574,26 @@ class Interpreter:
             _, out_add, warn_add, ops_delta, _ = res
             return i + 1, ops_delta, out_add, warn_add, None
         return i, 0, [], [], None
+
+    def _finalize_run(
+        self,
+        output_lines: List[str],
+        warnings: List[str],
+        total_ops: int,
+        start_time: float,
+    ) -> Dict[str, Any]:
+        """Compute eco stats and produce final run result dict."""
+        duration_s = max(0.000001, time.time() - start_time)
+        eco = self._compute_eco(total_ops, duration_s)
+        # re-add a runtime warning if usage is high
+        if total_ops > 1000:
+            warnings.append("High estimated energy use")
+        return {
+            "output": "\n".join(output_lines) + ("\n" if output_lines else ""),
+            "warnings": warnings,
+            "eco": eco,
+            "errors": None,
+        }
 
     def _dispatch_ecotip(self, total_ops: int, i: int, ops_scale: float):
         res = self._handle_ecotip(total_ops, ops_scale)
@@ -627,21 +662,51 @@ class Interpreter:
         inputs: Dict[str, Any] = None,
         settings: Dict[str, Any] = None,
     ) -> Dict[str, Any]:
-        # Avoid mutable defaults
+        output_lines, warnings, total_ops, maybe_err, start_time = (
+            self._prepare_and_execute(code, inputs, settings)
+        )
+        if maybe_err.get("errors"):
+            return {
+                "output": "\n".join(output_lines),
+                "warnings": warnings,
+                "eco": None,
+                "errors": maybe_err["errors"],
+            }
+
+        return self._finalize_run(output_lines, warnings, total_ops, start_time)
+
+    def _prepare_and_execute(
+        self, code: str, inputs: Dict[str, Any], settings: Dict[str, Any]
+    ) -> Tuple[List[str], List[str], int, Dict[str, Any], float]:
+        # thin wrapper: validation and delegation to core executor
         if inputs is None:
             inputs = {}
         if settings is None:
             settings = {}
-
-        # If requested, run the whole program in a subprocess for isolation
+        # handle subprocess fast-path
         if settings.get("use_subprocess"):
-            return self._maybe_run_in_subprocess(settings, code)
+            res = self._maybe_run_in_subprocess(settings, code)
+            return (
+                res.get("output", "").splitlines(),
+                res.get("warnings", []),
+                0,
+                res.get("errors") or {},
+                time.time(),
+            )
+        # otherwise delegate heavy work
+        return self._execute_core(code, inputs, settings)
 
+    def _execute_core(
+        self, code: str, inputs: Dict[str, Any], settings: Dict[str, Any]
+    ) -> Tuple[List[str], List[str], int, Dict[str, Any], float]:
+        """Core executor separated to reduce wrapper complexity.
+
+        Returns (output_lines, warnings, total_ops, maybe_err, start_time).
+        """
         start_time = time.time()
         env: Dict[str, Any] = {}
         output_lines: List[str] = []
         warnings: List[str] = []
-        steps = 0
         total_ops = 0
         ops_scale = 1.0
 
@@ -651,87 +716,39 @@ class Interpreter:
         self.co2_per_kwh_g = settings.get("co2_per_kwh_g", self.co2_per_kwh_g)
 
         lines = code.splitlines()
-        # local block extraction is handled by _extract_block_for_run
 
-        def _execute_lines() -> Tuple[List[str], List[str], int, Dict[str, Any]]:
-            i = 0
-            steps_local = 0
-            total_ops_local = 0
-            output_local: List[str] = []
-            warnings_local: List[str] = []
-            while i < len(lines):
-                raw = lines[i]
-                if steps_local > self.max_steps:
-                    warnings_local.append("Step limit exceeded; execution aborted")
-                    break
-                line = raw.strip()
-                if not line or line.startswith("#"):
-                    i += 1
-                    continue
-                steps_local += 1
-                # allow savePower to modify ops_scale via env
-                ops_scale_local = env.get("_ops_scale", ops_scale)
-                total_ops_local += self.ops_map.get("other", 5)
-                new_i, ops_delta, out_add, warn_add, err = self._dispatch_statement(
-                    lines,
-                    i,
-                    line,
-                    env,
-                    inputs,
-                    output_local,
-                    warnings_local,
-                    total_ops_local,
-                    ops_scale_local,
-                )
-                if err:
-                    return (
-                        output_local,
-                        warnings_local,
-                        total_ops_local,
-                        {"errors": err},
-                    )
-                if out_add:
-                    output_local.extend(out_add)
-                if warn_add:
-                    warnings_local.extend(warn_add)
-                total_ops_local += ops_delta
-                i = new_i
-            return output_local, warnings_local, total_ops_local, {}
-
-        output_lines, warnings, total_ops, maybe_err = _execute_lines()
-        if maybe_err.get("errors"):
-            return {
-                "output": "\n".join(output_lines),
-                "warnings": warnings,
-                "eco": None,
-                "errors": maybe_err["errors"],
-            }
-
-        duration_s = max(0.000001, time.time() - start_time)
-        # compute eco stats
-        compute_energy_J = total_ops * self.energy_per_op_J
-        runtime_overhead_J = duration_s * self.idle_power_W
-        total_energy_kWh = (compute_energy_J + runtime_overhead_J) / 3_600_000.0
-        co2_g = total_energy_kWh * self.co2_per_kwh_g
-
-        eco = {
-            "total_ops": total_ops,
-            "energy_J": compute_energy_J + runtime_overhead_J,
-            "energy_kWh": total_energy_kWh,
-            "co2_g": co2_g,
-            "tips": [],
-        }
-        # simple tip
-        if total_ops > 1000:
-            eco["tips"].append(
-                "Consider reducing loop iterations or heavy math operations"
+        i = 0
+        steps_local = 0
+        while i < len(lines):
+            raw = lines[i]
+            if steps_local > self.max_steps:
+                warnings.append("Step limit exceeded; execution aborted")
+                break
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                i += 1
+                continue
+            steps_local += 1
+            ops_scale_local = env.get("_ops_scale", ops_scale)
+            total_ops += self.ops_map.get("other", 5)
+            new_i, ops_delta, out_add, warn_add, err = self._dispatch_statement(
+                lines,
+                i,
+                line,
+                env,
+                inputs,
+                output_lines,
+                warnings,
+                total_ops,
+                ops_scale_local,
             )
-            warnings.append("High estimated energy use")
-
-        return {
-            "output": "\n".join(output_lines) + ("\n" if output_lines else ""),
-            "warnings": warnings,
-            "eco": eco,
-            "errors": None,
-        }
+            if err:
+                return output_lines, warnings, total_ops, {"errors": err}, start_time
+            if out_add:
+                output_lines.extend(out_add)
+            if warn_add:
+                warnings.extend(warn_add)
+            total_ops += ops_delta
+            i = new_i
+        return output_lines, warnings, total_ops, {}, start_time
 
