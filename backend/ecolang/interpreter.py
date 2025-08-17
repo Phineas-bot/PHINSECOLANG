@@ -833,11 +833,9 @@ class Interpreter:
             raw = lines[i]
             # enforce wall-clock timeout
             if time.time() - start_wall > self.max_time_s:
-                warnings.append("Time limit exceeded; execution aborted")
-                break
+                return output_lines, warnings, total_ops, {"errors": {"code": "TIMEOUT", "message": "Time limit exceeded"}}, start_time
             if steps_local > self.max_steps:
-                warnings.append("Step limit exceeded; execution aborted")
-                break
+                return output_lines, warnings, total_ops, {"errors": {"code": "STEP_LIMIT", "message": "Step limit exceeded"}}, start_time
             line = raw.strip()
             if not line or line.startswith("#"):
                 i += 1
@@ -862,8 +860,7 @@ class Interpreter:
                 # enforce output length cap
                 for o in out_add:
                     if sum(len(x) for x in output_lines) + len(o) > self.max_output_chars:
-                        warnings.append("Output length limit reached; truncating")
-                        break
+                        return output_lines, warnings, total_ops, {"errors": {"code": "OUTPUT_LIMIT", "message": "Output length limit reached"}}, start_time
                     output_lines.append(o)
             if warn_add:
                 warnings.extend(warn_add)
