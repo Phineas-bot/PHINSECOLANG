@@ -11,12 +11,24 @@ import time
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .. import db
 from ..ecolang.interpreter import Interpreter
 
 app = FastAPI(title="EcoLang API", version="0.1")
+
+# Allow the frontend dev server (Vite React default) and common localhost ports
+# to call the API during development. In production tighten this to the
+# frontend's real origin or remove entirely.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 def _cap_settings(settings: Optional[Dict[str, Any]]) -> Dict[str, Any]:
