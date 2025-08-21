@@ -19,12 +19,31 @@ from ..ecolang.interpreter import Interpreter
 
 app = FastAPI(title="EcoLang API", version="0.1")
 
-# Allow the frontend dev server (Vite React default) and common localhost ports
-# to call the API during development. In production tighten this to the
-# frontend's real origin or remove entirely.
+# Development CORS / connection guidance
+#
+# During local development the frontend is typically served by Vite at
+# http://localhost:5173 (or http://127.0.0.1:5173). The easiest way to avoid
+# origin mismatches is to allow the dev server origin here or (for local-only
+# convenience) use a permissive origin of "*". For production, replace the
+# allow_origins value with the exact origin(s) that should be allowed.
+#
+# How to connect the frontend to this backend during development:
+# - Start the backend (uvicorn) on a stable local port, e.g. 8001:
+#     .venv\Scripts\python -m uvicorn backend.app.main:app --reload --port 8001 --host 127.0.0.1
+# - Start the frontend dev server (from the `frontend/` folder):
+#     npm run dev
+# - In the frontend UI use the "API Base URL" input and set it to the
+#   backend URL (example): http://127.0.0.1:8001
+# - Alternatively set VITE_API_BASE when starting Vite to bake the value into
+#   the dev build:
+#     $env:VITE_API_BASE='http://127.0.0.1:8001'; npm run dev
+#
+# During development we enable permissive CORS to avoid intermittent failures
+# caused by origin mismatches (loopback vs localhost vs IPv6). Change to a
+# stricter list before deploying to production.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=["*"],  # permissive for local development only
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

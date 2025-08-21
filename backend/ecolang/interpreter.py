@@ -39,7 +39,7 @@ class SafeEvaluator(ast.NodeVisitor):
     lookup from a provided `env` dict. Function calls, attribute access and
     other potentially dangerous constructs are rejected at parse-time in
     `eval_expr` (see module-level AST walk). This class focuses on the
-    trusted subset of AST nodes the language exposes.
+    trusted subset of AST nodes the language exposes.will evaluate more
 
     Args:
         env: mapping of variable names to values made available to expressions.
@@ -443,7 +443,7 @@ class Interpreter:
                 continue
             if t == "else" and depth == 0:
                 return j
-        return None  # type: ignore
+        return None  # type: ignore (to review logic)
 
     def _handle_say(
         self, line: str, env: Dict[str, Any], ops_scale: float

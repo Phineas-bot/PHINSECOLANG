@@ -1,8 +1,11 @@
 import React, { useState, useEffect } from 'react'
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
+// Prefer an explicit local backend port that we run in this workspace (8001).
+// Allow overriding via VITE_API_BASE for other environments.
+const DEFAULT_API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8001'
 
 export default function App() {
+  const [apiBase, setApiBase] = useState(DEFAULT_API_BASE)
   const [code, setCode] = useState('say 1')
   const [output, setOutput] = useState('')
   const [warnings, setWarnings] = useState([])
@@ -11,31 +14,37 @@ export default function App() {
   const [title, setTitle] = useState('My Script')
 
   useEffect(() => {
-    fetch(`${API_BASE}/scripts`).then(r => r.json()).then(setScripts).catch(() => {})
-  }, [])
+    fetch(`${apiBase}/scripts`).then(r => r.json()).then(setScripts).catch(() => {})
+  }, [apiBase])
 
   async function runCode() {
     setOutput('Running...')
     setWarnings([])
     setEco(null)
     try {
-      const resp = await fetch(`${API_BASE}/run`, {
+      const resp = await fetch(`${apiBase}/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code, inputs: {} }),
       })
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '')
+        setOutput(`HTTP ${resp.status}: ${text}`)
+        return
+      }
       const j = await resp.json()
       setOutput(j.output || '')
       setWarnings(j.warnings || [])
       setEco(j.eco || null)
     } catch (e) {
-      setOutput('Error: ' + e.message)
+      // show exception details (network/CORS failures appear here)
+      setOutput('Error: ' + (e && e.message ? e.message : String(e)))
     }
   }
 
   async function saveScript() {
     try {
-      const resp = await fetch(`${API_BASE}/save`, {
+      const resp = await fetch(`${apiBase}/save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title, code }),
@@ -51,8 +60,17 @@ export default function App() {
 
   return (
     <div className="container">
-      <h1>EcoLang Playground</h1>
+      <h1>PHINEAS EcoLang Playground</h1>
       <div className="panel">
+        <label style={{ display: 'block', marginBottom: 8 }}>
+          <span>API Base URL: </span>
+          <input
+            value={apiBase}
+            onChange={e => setApiBase(e.target.value)}
+            style={{ width: 320, marginLeft: 8 }}
+            placeholder="http://127.0.0.1:8001"
+          />
+        </label>
         <textarea value={code} onChange={e => setCode(e.target.value)} />
         <div className="controls">
           <button onClick={runCode}>Run</button>
