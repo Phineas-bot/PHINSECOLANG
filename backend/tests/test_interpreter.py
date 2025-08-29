@@ -40,3 +40,31 @@ def test_ask_and_savepower():
     res = it.run(code, inputs={'answer': 'green'})
     assert 'green' in res['output']
     assert '2' in res['output']
+
+
+def test_func_define_and_call_print_and_into():
+    it = Interpreter()
+    code = (
+        'func add a b\n'
+        '  let x = a + b\n'
+        '  return x\n'
+        'end\n'
+        'call add with 2, 3 into r\n'
+        'say r\n'
+        'call add with 1, 4\n'
+    )
+    res = it.run(code)
+    assert res['errors'] is None
+    # 'say r' prints 5; second call prints return value
+    assert res['output'].split().count('5') >= 2
+
+
+def test_func_limits_and_errors():
+    it = Interpreter()
+    # too many params
+    code = 'func f a b c d\n  return a\nend\n'
+    res = it.run(code)
+    assert res['errors'] is not None
+    # unknown function
+    res2 = it.run('call nope')
+    assert res2['errors'] is not None

@@ -1,8 +1,9 @@
-# EcoLang – Full Software Specification Document
+# EcoLang – mini Software Specification Document
 
 **Project Title:** EcoLang – An Eco‑Friendly Educational Programming Language
 **Version:** 1.0
-**Architecture Style:** 2‑Tier Client–Server (Frontend web app + Backend API with DB)
+**developer:** PHINEAS
+**Architecture Style:** 2‑Tier Client–Server (Frontend web app(WEB IDE) + Backend API with DB)
 **Target Duration:** 4 weeks
 
 ---
@@ -11,7 +12,7 @@
 
 EcoLang is a lightweight, Python‑inspired programming language and interpreter that teaches coding fundamentals while promoting green computing practices. Users write EcoLang code in a web editor, run it on a backend interpreter, and receive output plus an estimated eco impact report (energy/CO₂). Scripts and run history are persisted in a small database. The system is deployed online and accessible from modern browsers.
 
-**Why it’s different:** Eco awareness is built into the language: eco tips, energy estimates, performance hints, and friendly errors.
+**Why it’s different:** Eco awareness is built into the language: eco tips, energy estimates, performance hints, and friendly errors. Focuses on specific domains 
 
 ---
 
@@ -65,7 +66,7 @@ EcoLang is a lightweight, Python‑inspired programming language and interpreter
 * **Client:** Browser UI (HTML/CSS/JS or React). Sends code to API, displays output + metrics, manages saved scripts.
 * **Server:** Python FastAPI app providing `/run`, `/save`, `/load`, `/scripts/{id}`, `/stats` endpoints. Contains the EcoLang interpreter, eco‑impact estimator, and DB layer (SQLite/PostgreSQL).
 
-High‑level data flow:
+Predicted High‑level data flow:
 
 ```
 Browser (Editor) → POST /run → Interpreter → Output + EcoStats → (persist) → DB

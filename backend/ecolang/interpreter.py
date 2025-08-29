@@ -55,6 +55,9 @@ class SafeEvaluator(ast.NodeVisitor):
         left = self.visit(node.left)
         right = self.visit(node.right)
         if isinstance(node.op, ast.Add):
+            # Support string concatenation by coercing to string when either side is a string
+            if isinstance(left, str) or isinstance(right, str):
+                return str(left) + str(right)
             return left + right
         if isinstance(node.op, ast.Sub):
             return left - right
@@ -174,7 +177,14 @@ def eval_expr(expr: str, env: Dict[str, Any]):
             raise EvalError(f"Unsupported name in expression: {node.id}")
 
     evaluator = SafeEvaluator(env)
-    return evaluator.visit(tree)
+    try:
+        return evaluator.visit(tree)
+    except EvalError:
+        raise
+    except Exception as e:
+        # Convert any unexpected Python errors (TypeError, ZeroDivisionError, etc.)
+        # into a friendly EvalError so the interpreter can report them cleanly.
+        raise EvalError(str(e))
 
 
 class Interpreter:
@@ -201,6 +211,7 @@ class Interpreter:
             "io": 200,
             "optimize": 1000,
             "other": 5,
+            "func_call": 20,
         }
         # Eco/energy estimation tunables (can be overridden via settings)
         self.energy_per_op_J = 1e-9
@@ -211,6 +222,13 @@ class Interpreter:
         self.max_loop = 10000
         self.max_time_s = 1.5
         self.max_output_chars = 5000
+        # Function-related constraints (green-friendly defaults)
+        self.max_func_params = 3
+        self.max_call_depth = 5
+        # Functions registry for this interpreter run: name -> {args: [...], block: [...]}
+        self.functions: Dict[str, Dict[str, Any]] = {}
+        # Current call depth counter
+        self._call_depth = 0
 
     def _run_sub_interpreter(
         self,
@@ -585,7 +603,7 @@ class Interpreter:
             raw = lines[j]
             txt = raw.strip()
             # track nested starts
-            if txt.startswith("if ") or txt.startswith("repeat "):
+            if txt.startswith("if ") or txt.startswith("repeat ") or txt.startswith("func "):
                 depth += 1
                 block.append(raw)
             elif txt == "end":
@@ -644,6 +662,8 @@ class Interpreter:
             "ask": lambda: self._dispatch_ask(
                 line, i, env, inputs, ops_scale
             ),
+            "func": lambda: self._dispatch_func_def(lines, i),
+            "call": lambda: self._dispatch_func_call(line, i, env, inputs, ops_scale),
             "if": lambda: self._dispatch_control_if(
                 lines, i, env, inputs, output_lines, warnings, total_ops, ops_scale
             ),
@@ -684,6 +704,183 @@ class Interpreter:
         if err:
             return i, 0, [], [], err
         return new_i, ops_delta, out_add, warn_add, None
+
+    def _dispatch_func_def(self, lines: List[str], i: int):
+        # Parse: func name [arg1 arg2 ...]\n ... \n end
+        header = lines[i].strip()
+        rest = header[len("func "):].strip()
+        parts = rest.split()
+        if not parts:
+            return (
+                i,
+                0,
+                [],
+                [],
+                {"code": "SYNTAX_ERROR", "message": "Missing function name"},
+            )
+        name = parts[0]
+        if not name.isidentifier():
+            return (
+                i,
+                0,
+                [],
+                [],
+                {"code": "SYNTAX_ERROR", "message": "Invalid function name"},
+            )
+        args = parts[1:]
+        if len(args) > self.max_func_params:
+            return (
+                i,
+                0,
+                [],
+                [],
+                {"code": "SYNTAX_ERROR", "message": f"Too many params (max {self.max_func_params})"},
+            )
+        try:
+            block, end_idx = self._extract_block_for_run(lines, i + 1)
+        except EvalError as e:
+            return (i, 0, [], [], {"code": "SYNTAX_ERROR", "message": str(e)})
+        # store function (exclude trailing 'end' inside block if present at top level)
+        self.functions[name] = {"args": args, "block": block}
+        # small op cost for definition bookkeeping
+        return end_idx + 1, int(self.ops_map.get("other", 5)), [], [f"func defined: {name}"], None
+
+    def _dispatch_func_call(
+        self,
+        line: str,
+        i: int,
+        env: Dict[str, Any],
+        inputs: Dict[str, Any],
+        ops_scale: float,
+    ):
+        # Syntax: call name [with expr1, expr2, ...] [into var]
+        # Examples:
+        #   call add with 1, 2 into result
+        #   call greet with "Eco"  (prints return value if no 'into')
+        txt = line[len("call "):].strip()
+        if not txt:
+            return i, 0, [], [], {"code": "SYNTAX_ERROR", "message": "Missing function name"}
+        # split into main and optional 'into'
+        into_var = None
+        if " into " in txt:
+            main, into_part = txt.split(" into ", 1)
+            into_var = into_part.strip()
+            if not into_var.isidentifier():
+                return i, 0, [], [], {"code": "SYNTAX_ERROR", "message": "Invalid target after 'into'"}
+        else:
+            main = txt
+        # handle optional 'with'
+        if " with " in main:
+            name_str, args_str = main.split(" with ", 1)
+            name = name_str.strip()
+            args_exprs = [s.strip() for s in args_str.split(",") if s.strip()]
+        else:
+            name = main.strip()
+            args_exprs = []
+        if not name.isidentifier():
+            return i, 0, [], [], {"code": "SYNTAX_ERROR", "message": "Invalid function name"}
+        if name not in self.functions:
+            return i, 0, [], [], {"code": "RUNTIME_ERROR", "message": f"Unknown function '{name}'"}
+        spec = self.functions[name]
+        if len(args_exprs) != len(spec["args"]):
+            return i, 0, [], [], {"code": "RUNTIME_ERROR", "message": "Argument count mismatch"}
+        # evaluate arguments in current env
+        call_args: Dict[str, Any] = {}
+        for arg_name, expr in zip(spec["args"], args_exprs):
+            try:
+                call_args[arg_name] = eval_expr(expr, env)
+            except EvalError as e:
+                return i, 0, [], [], {"code": "RUNTIME_ERROR", "message": str(e)}
+        # execute the function body with local env seeded with call_args
+        try:
+            ret_val, out_lines, warn_add, inner_ops = self._execute_function(name, spec["block"], call_args, inputs, ops_scale)
+        except EvalError as e:
+            return i, 0, [], [], {"code": "RUNTIME_ERROR", "message": str(e)}
+        # charge a function call op cost and accumulate any inner ops
+        ops_delta = int(self.ops_map.get("func_call", 20) * ops_scale) + inner_ops
+        out_add: List[str] = []
+        if out_lines:
+            out_add.extend(out_lines)
+        if into_var:
+            env[into_var] = ret_val
+        else:
+            # no 'into': print the return value if not None
+            if ret_val is not None:
+                out_add.append(str(ret_val))
+        return i + 1, ops_delta, out_add, warn_add, None
+
+    def _execute_function(
+        self,
+        name: str,
+        block: List[str],
+        args_env: Dict[str, Any],
+        inputs: Dict[str, Any],
+        ops_scale: float,
+    ) -> Tuple[Any, List[str], List[str], int]:
+        # Enforce call depth (prevent deep/recursive calls)
+        if self._call_depth >= self.max_call_depth:
+            raise EvalError("Call depth limit exceeded")
+        self._call_depth += 1
+        try:
+            local_env: Dict[str, Any] = dict(args_env)
+            out_lines: List[str] = []
+            warn_add: List[str] = []
+            ops_delta = 0
+            i = 0
+            steps_local = 0
+            start_wall = time.time()
+            while i < len(block):
+                raw = block[i]
+                if time.time() - start_wall > self.max_time_s:
+                    raise EvalError("Time limit exceeded in function")
+                if steps_local > self.max_steps:
+                    warn_add.append("Step limit exceeded in function")
+                    raise EvalError("Step limit exceeded in function")
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    i += 1
+                    continue
+                # return handling
+                if line.startswith("return ") or line == "return":
+                    expr = line[len("return"):].strip()
+                    if expr:
+                        try:
+                            val = eval_expr(expr, local_env)
+                        except EvalError as e:
+                            raise EvalError(str(e))
+                    else:
+                        val = None
+                    return val, out_lines, warn_add, ops_delta
+                steps_local += 1
+                # charge small dispatch cost
+                ops_delta += self.ops_map.get("other", 5)
+                new_i, inner_ops, out_add, w_add, err = self._dispatch_statement(
+                    block,
+                    i,
+                    line,
+                    local_env,
+                    inputs,
+                    out_lines,
+                    warn_add,
+                    ops_delta,
+                    ops_scale,
+                )
+                if err:
+                    # propagate errors as EvalError inside function context
+                    raise EvalError(err.get("message", "Function error"))
+                if out_add:
+                    for o in out_add:
+                        if sum(len(x) for x in out_lines) + len(o) > self.max_output_chars:
+                            raise EvalError("Output length limit reached in function")
+                        out_lines.append(o)
+                if w_add:
+                    warn_add.extend(w_add)
+                ops_delta += inner_ops
+                i = new_i
+            # implicit return None if no return seen
+            return None, out_lines, warn_add, ops_delta
+        finally:
+            self._call_depth -= 1
 
     def _dispatch_ask(
         self,
