@@ -1,0 +1,5 @@
+language,elapsed_s,ops,energy_J,co2_g
+EcoLang,0.004878800,75,0.000000575,0.000000000
+Python,0.097329600,4,0.048664804,0.000006421
+Node,0.090508900,4,0.045254454,0.000005971
+# Greener: EcoLang (lowest energy_J)
