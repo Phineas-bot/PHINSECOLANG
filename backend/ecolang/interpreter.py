@@ -28,7 +28,16 @@ class EvalError(Exception):
     is intentionally narrow: expression evaluation code should translate this
     into the interpreter's RUNTIME_ERROR responses rather than leaking Python
     exceptions to callers.
+
+    Attributes:
+        column: optional 1-based column where the error occurred within the expression
+        text: optional original expression text (single line)
     """
+
+    def __init__(self, message: str, *, column: Optional[int] = None, text: Optional[str] = None):
+        super().__init__(message)
+        self.column = column
+        self.text = text
 
 
 
@@ -142,9 +151,14 @@ def eval_expr(expr: str, env: Dict[str, Any]):
     try:
         tree = ast.parse(expr, mode="eval")
     except SyntaxError as e:
-        # Hide Python SyntaxError; elevate to EvalError which the interpreter
-        # handles and reports as a runtime/syntax error to clients.
-        raise EvalError(f"Syntax error in expression: {expr}") from e
+        # Hide Python SyntaxError; elevate to EvalError carrying a basic column
+        # and the original expression text for better diagnostics at call sites.
+        col = None
+        try:
+            col = int(getattr(e, "offset", None) or 1)
+        except Exception:
+            col = 1
+        raise EvalError("Syntax error in expression", column=col, text=expr) from e
 
     # Walk the AST and explicitly disallow dangerous constructs. Doing this
     # centrally (instead of relying on SafeEvaluator.generic_visit) gives a
@@ -230,6 +244,29 @@ class Interpreter:
         # Current call depth counter
         self._call_depth = 0
 
+    # --- Error helpers -------------------------------------------------
+    def _err(self, code: str, message: str, *, line: int, column: int = 1, line_text: Optional[str] = None, hint: Optional[str] = None) -> Dict[str, Any]:
+        err: Dict[str, Any] = {"code": code, "message": message, "line": line, "column": column}
+        if line_text is not None:
+            err["context"] = {"line_text": line_text}
+        if hint:
+            err["hint"] = hint
+        return err
+
+    def _with_position(self, err: Optional[Dict[str, Any]], *, line: int, column: int = 1, line_text: Optional[str] = None, hint: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        if not err:
+            return None
+        # Avoid overwriting if already present
+        if "line" not in err:
+            err["line"] = line
+        if "column" not in err:
+            err["column"] = column
+        if line_text is not None and "context" not in err:
+            err["context"] = {"line_text": line_text}
+        if hint and "hint" not in err:
+            err["hint"] = hint
+        return err
+
     def _run_sub_interpreter(
         self,
         code: str,
@@ -298,16 +335,32 @@ class Interpreter:
         the same normalized shape used by the statement dispatching code.
         """
         line = lines[i].strip()
+        # Validate header shape: must end with ' then'
+        if not line.endswith(" then"):
+            return (
+                i,
+                0,
+                [],
+                [],
+                self._err(
+                    "SYNTAX_ERROR",
+                    "Expected 'then' after if condition",
+                    line=i + 1,
+                    column=len(line) + 1,
+                    line_text=lines[i],
+                    hint="Write: if <condition> then",
+                ),
+            )
         cond_expr = line[3:-5].strip()
         try:
             block, end_idx = self._extract_block_for_run(lines, i + 1)
         except EvalError as e:
             return (
-                end_idx if "end_idx" in locals() else i,
+                i,
                 0,
                 [],
                 [],
-                {"code": "SYNTAX_ERROR", "message": str(e)},
+                self._err("SYNTAX_ERROR", str(e), line=i + 1, column=1, line_text=lines[i], hint="Add a matching 'end' for this 'if'."),
             )
 
         # find optional else inside block (top-level). We track `depth` to avoid
@@ -330,7 +383,15 @@ class Interpreter:
         try:
             cond_val = eval_expr(cond_expr, env)
         except EvalError as e:
-            return (i, 0, [], [], {"code": "RUNTIME_ERROR", "message": str(e)})
+            base_col = 1 + len("if ")
+            col = base_col + (e.column or 1) - 1
+            return (
+                i,
+                0,
+                [],
+                [],
+                self._err("RUNTIME_ERROR", str(e), line=i + 1, column=col, line_text=lines[i].strip(), hint="Fix the condition expression after 'if'."),
+            )
 
         if bool(cond_val):
             exec_block = block[:else_idx] if else_idx is not None else block
@@ -387,6 +448,21 @@ class Interpreter:
             (new_index, ops_delta, output_lines_added, warnings_added, error_or_none)
         """
         line = lines[i].strip()
+        if not line.endswith(" times"):
+            return (
+                i,
+                0,
+                [],
+                [],
+                self._err(
+                    "SYNTAX_ERROR",
+                    "Expected 'times' at end of repeat",
+                    line=i + 1,
+                    column=len(line) + 1,
+                    line_text=lines[i],
+                    hint="Write: repeat <number> times",
+                ),
+            )
         mid = line[len("repeat ") : -len(" times")].strip()
         try:
             n = int(mid)
@@ -396,13 +472,13 @@ class Interpreter:
                 0,
                 [],
                 [],
-                {"code": "SYNTAX_ERROR", "message": "Invalid repeat count"},
+                self._err("SYNTAX_ERROR", "Invalid repeat count", line=i + 1, column=len("repeat ") + 1, line_text=lines[i], hint="Use: repeat <number> times"),
             )
 
         try:
             block, end_idx = self._extract_block_for_run(lines, i + 1)
         except EvalError as e:
-            return (i, 0, [], [], {"code": "SYNTAX_ERROR", "message": str(e)})
+            return (i, 0, [], [], self._err("SYNTAX_ERROR", str(e), line=i + 1, column=1, line_text=lines[i], hint="Add a matching 'end' for this 'repeat'."))
 
         # enforce configured max loop count and produce a warning if trimmed
         if n > self.max_loop:
@@ -475,7 +551,9 @@ class Interpreter:
         try:
             val = eval_expr(expr, env)
         except EvalError as e:
-            return (None, [], [], 0, {"code": "RUNTIME_ERROR", "message": str(e)})
+            # Column relative to start of expression after 'say '
+            col = len("say ") + (e.column or 1)
+            return (None, [], [], 0, {"code": "RUNTIME_ERROR", "message": str(e), "column": col})
         # output is stringified; _execute_core will check output length caps
         output = str(val)
         ops_delta = int(self.ops_map.get("print", 50) * ops_scale)
@@ -496,7 +574,7 @@ class Interpreter:
                 [],
                 [],
                 0,
-                {"code": "SYNTAX_ERROR", "message": "Expected '=' in let statement"},
+                {"code": "SYNTAX_ERROR", "message": "Expected '=' in let statement", "hint": "Use: let name = expr"},
             )
         name, expr = rest.split("=", 1)
         name = name.strip()
@@ -507,12 +585,13 @@ class Interpreter:
                 [],
                 [],
                 0,
-                {"code": "SYNTAX_ERROR", "message": "Invalid identifier in let"},
+                {"code": "SYNTAX_ERROR", "message": "Invalid identifier in let", "hint": "Identifiers must be letters/digits/_ and not start with a digit."},
             )
         try:
             val = eval_expr(expr, env)
         except EvalError as e:
-            return (None, [], [], 0, {"code": "RUNTIME_ERROR", "message": str(e)})
+            col = len("let ") + rest.find("=") + 1 + (e.column or 1)
+            return (None, [], [], 0, {"code": "RUNTIME_ERROR", "message": str(e), "column": col})
         # assignment writes into the current environment
         env[name] = val
         ops_delta = int(self.ops_map.get("assign", 5) * ops_scale)
@@ -542,7 +621,7 @@ class Interpreter:
                 [],
                 [],
                 0,
-                {"code": "SYNTAX_ERROR", "message": "Invalid identifier in ask"},
+                {"code": "SYNTAX_ERROR", "message": "Invalid identifier in ask", "hint": "Use: ask name"},
             )
         if name in inputs:
             env[name] = inputs[name]
@@ -648,6 +727,36 @@ class Interpreter:
             return self._dispatch_ecotip(total_ops, i, ops_scale)
         if token == "savePower":
             return self._dispatch_save_power(line, i, env)
+        if token == "else":
+            return (
+                i,
+                0,
+                [],
+                [],
+                self._err(
+                    "SYNTAX_ERROR",
+                    "'else' without matching 'if'",
+                    line=i + 1,
+                    column=1,
+                    line_text=line,
+                    hint="Place 'else' inside an if..end block.",
+                ),
+            )
+        if token == "end":
+            return (
+                i,
+                0,
+                [],
+                [],
+                self._err(
+                    "SYNTAX_ERROR",
+                    "Unexpected 'end'",
+                    line=i + 1,
+                    column=1,
+                    line_text=line,
+                    hint="Remove extra 'end' or match it with if/repeat/func.",
+                ),
+            )
 
         dispatch_map = {
             "say": lambda: self._dispatch_simple_prefix(
@@ -679,7 +788,7 @@ class Interpreter:
                 0,
                 [],
                 [],
-                {"code": "SYNTAX_ERROR", "message": f"Unknown statement: {line}"},
+                self._err("SYNTAX_ERROR", f"Unknown statement: {line}", line=i + 1, column=1, line_text=line, hint="Check the command name or syntax."),
             )
         res = handler()
         if not res:
@@ -688,7 +797,7 @@ class Interpreter:
                 0,
                 [],
                 [],
-                {"code": "SYNTAX_ERROR", "message": f"Unknown statement: {line}"},
+                self._err("SYNTAX_ERROR", f"Unknown statement: {line}", line=i + 1, column=1, line_text=line, hint="Check the command name or syntax."),
             )
         # all handlers return normalized (new_i, ops_delta, out_add, warn_add, err)
         try:
@@ -702,7 +811,8 @@ class Interpreter:
                 {"code": "INTERNAL", "message": "Invalid handler result"},
             )
         if err:
-            return i, 0, [], [], err
+            # Enrich with position info if missing
+            return i, 0, [], [], self._with_position(err, line=i + 1, column=err.get("column", 1), line_text=line)
         return new_i, ops_delta, out_add, warn_add, None
 
     def _dispatch_func_def(self, lines: List[str], i: int):
@@ -716,7 +826,7 @@ class Interpreter:
                 0,
                 [],
                 [],
-                {"code": "SYNTAX_ERROR", "message": "Missing function name"},
+                self._err("SYNTAX_ERROR", "Missing function name", line=i + 1, column=1, line_text=lines[i], hint="Use: func name [args]"),
             )
         name = parts[0]
         if not name.isidentifier():
@@ -725,7 +835,7 @@ class Interpreter:
                 0,
                 [],
                 [],
-                {"code": "SYNTAX_ERROR", "message": "Invalid function name"},
+                self._err("SYNTAX_ERROR", "Invalid function name", line=i + 1, column=len("func ") + 1, line_text=lines[i]),
             )
         args = parts[1:]
         if len(args) > self.max_func_params:
@@ -734,12 +844,12 @@ class Interpreter:
                 0,
                 [],
                 [],
-                {"code": "SYNTAX_ERROR", "message": f"Too many params (max {self.max_func_params})"},
+                self._err("SYNTAX_ERROR", f"Too many params (max {self.max_func_params})", line=i + 1, column=1, line_text=lines[i]),
             )
         try:
             block, end_idx = self._extract_block_for_run(lines, i + 1)
         except EvalError as e:
-            return (i, 0, [], [], {"code": "SYNTAX_ERROR", "message": str(e)})
+            return (i, 0, [], [], self._err("SYNTAX_ERROR", str(e), line=i + 1, column=1, line_text=lines[i], hint="Add a matching 'end' for this 'func'."))
         # store function (exclude trailing 'end' inside block if present at top level)
         self.functions[name] = {"args": args, "block": block}
         # small op cost for definition bookkeeping
@@ -759,14 +869,14 @@ class Interpreter:
         #   call greet with "Eco"  (prints return value if no 'into')
         txt = line[len("call "):].strip()
         if not txt:
-            return i, 0, [], [], {"code": "SYNTAX_ERROR", "message": "Missing function name"}
+            return i, 0, [], [], self._err("SYNTAX_ERROR", "Missing function name", line=i + 1, column=1, line_text=line)
         # split into main and optional 'into'
         into_var = None
         if " into " in txt:
             main, into_part = txt.split(" into ", 1)
             into_var = into_part.strip()
             if not into_var.isidentifier():
-                return i, 0, [], [], {"code": "SYNTAX_ERROR", "message": "Invalid target after 'into'"}
+                return i, 0, [], [], self._err("SYNTAX_ERROR", "Invalid target after 'into'", line=i + 1, column=line.find(" into ") + len(" into ") + 1, line_text=line)
         else:
             main = txt
         # handle optional 'with'
@@ -778,24 +888,27 @@ class Interpreter:
             name = main.strip()
             args_exprs = []
         if not name.isidentifier():
-            return i, 0, [], [], {"code": "SYNTAX_ERROR", "message": "Invalid function name"}
+            return i, 0, [], [], self._err("SYNTAX_ERROR", "Invalid function name", line=i + 1, column=len("call ") + 1, line_text=line)
         if name not in self.functions:
-            return i, 0, [], [], {"code": "RUNTIME_ERROR", "message": f"Unknown function '{name}'"}
+            return i, 0, [], [], self._err("RUNTIME_ERROR", f"Unknown function '{name}'", line=i + 1, column=len("call ") + 1, line_text=line)
         spec = self.functions[name]
         if len(args_exprs) != len(spec["args"]):
-            return i, 0, [], [], {"code": "RUNTIME_ERROR", "message": "Argument count mismatch"}
+            return i, 0, [], [], self._err("RUNTIME_ERROR", "Argument count mismatch", line=i + 1, column=line.find(" with ") + 1 if " with " in line else len("call ") + 1, line_text=line)
         # evaluate arguments in current env
         call_args: Dict[str, Any] = {}
         for arg_name, expr in zip(spec["args"], args_exprs):
             try:
                 call_args[arg_name] = eval_expr(expr, env)
             except EvalError as e:
-                return i, 0, [], [], {"code": "RUNTIME_ERROR", "message": str(e)}
+                # For argument expressions, best-effort column after 'with '
+                base = line.find(" with ")
+                base = (base + len(" with ")) if base >= 0 else len("call ")
+                return i, 0, [], [], self._err("RUNTIME_ERROR", str(e), line=i + 1, column=base + 1, line_text=line)
         # execute the function body with local env seeded with call_args
         try:
             ret_val, out_lines, warn_add, inner_ops = self._execute_function(name, spec["block"], call_args, inputs, ops_scale)
         except EvalError as e:
-            return i, 0, [], [], {"code": "RUNTIME_ERROR", "message": str(e)}
+            return i, 0, [], [], self._err("RUNTIME_ERROR", str(e), line=i + 1, column=1, line_text=line)
         # charge a function call op cost and accumulate any inner ops
         ops_delta = int(self.ops_map.get("func_call", 20) * ops_scale) + inner_ops
         out_add: List[str] = []

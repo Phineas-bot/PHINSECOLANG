@@ -16,5 +16,5 @@ if __name__ == "__main__":
     s = run(N)
     # Optional correctness output
     print(s)
-    # Required for wrapper
+    # Required for wrapper 
     print(f"ECO_OPS: {N}")

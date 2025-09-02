@@ -28,6 +28,31 @@ function EcoCard({ eco }) {
   )
 }
 
+function ErrorPanel({ err, codeText }) {
+  if (!err) return null
+  const line = err.line || 1
+  const col = err.column || 1
+  const lines = (codeText || '').split('\n')
+  const text = (err.context?.line_text) || lines[line - 1] || ''
+  const caret = ' '.repeat(Math.max(0, col - 1)) + '^'
+  return (
+    <div className="errors" role="alert" aria-live="assertive">
+      <h3>Error</h3>
+      <div className="err-summary">
+        <strong>{err.code}</strong>: {err.message}
+        {Number.isFinite(line) && Number.isFinite(col) ? (
+          <span> (line {line}, col {col})</span>
+        ) : null}
+      </div>
+      <pre className="codeframe">
+{text}\n
+{caret}
+      </pre>
+      {err.hint && <div className="hint">Hint: {err.hint}</div>}
+    </div>
+  )
+}
+
 export default function App() {
   const [tab, setTab] = useState('editor')
   const [apiBase, setApiBase] = useState(() => localStorage.getItem('apiBase') || DEFAULT_API_BASE)
@@ -42,6 +67,7 @@ export default function App() {
   const [output, setOutput] = useState('')
   const [warnings, setWarnings] = useState([])
   const [eco, setEco] = useState(null)
+  const [error, setError] = useState(null)
 
   const [scripts, setScripts] = useState([])
   const [title, setTitle] = useState('My Script')
@@ -80,6 +106,7 @@ export default function App() {
     setOutput('Running...')
     setWarnings([])
     setEco(null)
+    setError(null)
     try {
       const body = { code, inputs: inputsObj }
       if (currentScriptId) body.script_id = currentScriptId
@@ -96,6 +123,7 @@ export default function App() {
       setOutput(j.output || '')
       setWarnings(j.warnings || [])
       setEco(j.eco || null)
+      setError(j.errors || null)
       if (currentScriptId) fetchStats(currentScriptId)
     } catch (e) {
       setOutput('Error: ' + (e?.message || String(e)))
@@ -142,6 +170,7 @@ export default function App() {
     setOutput('')
     setWarnings([])
     setEco(null)
+  setError(null)
   }
 
   return (
@@ -184,6 +213,7 @@ export default function App() {
             <div>
               <h2>Output</h2>
               <pre className="output" aria-live="polite">{output}</pre>
+              <ErrorPanel err={error} codeText={code} />
               {warnings.length > 0 && (
                 <div className="warnings">
                   <h3>Warnings</h3>
