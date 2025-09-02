@@ -74,6 +74,15 @@ class SafeEvaluator(ast.NodeVisitor):
             return left * right
         if isinstance(node.op, ast.Div):
             return left / right
+        if isinstance(node.op, ast.Mod):
+            return left % right
+        if isinstance(node.op, ast.FloorDiv):
+            return left // right
+        if isinstance(node.op, ast.Pow):
+            # Guard against huge exponents
+            if abs(right) > 8:
+                raise EvalError("Exponent too large; max 8")
+            return left ** right
         raise EvalError(f"Unsupported binary op {node.op}")
 
     def visit_Compare(self, node):
@@ -103,7 +112,23 @@ class SafeEvaluator(ast.NodeVisitor):
             return +operand
         if isinstance(node.op, ast.USub):
             return -operand
+        if isinstance(node.op, ast.Not):
+            return not operand
         raise EvalError("Unsupported unary op")
+
+    def visit_BoolOp(self, node):
+        # Implement short-circuit and/or
+        if isinstance(node.op, ast.And):
+            for v in node.values:
+                if not self.visit(v):
+                    return False
+            return True
+        if isinstance(node.op, ast.Or):
+            for v in node.values:
+                if self.visit(v):
+                    return True
+            return False
+        raise EvalError("Unsupported boolean op")
 
     def visit_Num(self, node):
         return node.n
@@ -121,7 +146,55 @@ class SafeEvaluator(ast.NodeVisitor):
         raise EvalError(f"Undefined variable '{node.id}'")
 
     def visit_Call(self, node):
-        raise EvalError("Function calls are not allowed in EcoLang")
+        # Allow a limited set of safe builtin calls: len/length, toNumber, toString,
+        # array(), append(a,x), at(a,i), ecoOps()
+        if not isinstance(node.func, ast.Name):
+            raise EvalError("Unsupported call target")
+        name = node.func.id
+        # Evaluate arguments first
+        args = [self.visit(a) for a in node.args]
+        if name in ("len", "length"):
+            if len(args) != 1:
+                raise EvalError("length expects 1 arg")
+            return len(args[0])
+        if name == "toNumber":
+            if len(args) != 1:
+                raise EvalError("toNumber expects 1 arg")
+            try:
+                return float(args[0]) if (isinstance(args[0], str) and ("." in args[0])) else int(args[0])
+            except Exception:
+                raise EvalError("toNumber failed")
+        if name == "toString":
+            if len(args) != 1:
+                raise EvalError("toString expects 1 arg")
+            return str(args[0])
+        if name == "array":
+            if args:
+                raise EvalError("array expects 0 args")
+            return []
+        if name == "append":
+            if len(args) != 2:
+                raise EvalError("append expects 2 args")
+            # functional append: returns a new array
+            if not isinstance(args[0], list):
+                raise EvalError("append first arg must be array")
+            arr = list(args[0])
+            arr.append(args[1])
+            return arr
+        if name == "at":
+            if len(args) != 2:
+                raise EvalError("at expects 2 args")
+            a, idx = args
+            if not isinstance(a, list):
+                raise EvalError("at first arg must be array")
+            try:
+                return a[int(idx)]
+            except Exception:
+                raise EvalError("index out of range")
+        if name == "ecoOps":
+            # returns current ops from env injection
+            return int(self.env.get("_eco_ops", 0))
+        raise EvalError("Unsupported function call")
 
     def generic_visit(self, node):
         raise EvalError(f"Unsupported expression: {type(node).__name__}")
@@ -167,7 +240,6 @@ def eval_expr(expr: str, env: Dict[str, Any]):
         if isinstance(
             node,
             (
-                ast.Call,
                 ast.Attribute,
                 ast.Import,
                 ast.ImportFrom,
@@ -186,6 +258,19 @@ def eval_expr(expr: str, env: Dict[str, Any]):
             ),
         ):
             raise EvalError(f"Unsupported expression element: {type(node).__name__}")
+        # Allow only a safe set of function calls
+        if isinstance(node, ast.Call):
+            if not isinstance(node.func, ast.Name) or node.func.id not in (
+                "len",
+                "length",
+                "toNumber",
+                "toString",
+                "array",
+                "append",
+                "at",
+                "ecoOps",
+            ):
+                raise EvalError("Unsupported function call")
         # explicitly disallow a few dangerous builtin names
         if isinstance(node, ast.Name) and node.id in ("__import__", "eval", "exec", "open", "os", "sys"):
             raise EvalError(f"Unsupported name in expression: {node.id}")
@@ -240,9 +325,11 @@ class Interpreter:
         self.max_func_params = 3
         self.max_call_depth = 5
         # Functions registry for this interpreter run: name -> {args: [...], block: [...]}
-        self.functions: Dict[str, Dict[str, Any]] = {}
+        self.functions = {}
         # Current call depth counter
         self._call_depth = 0
+        # Constants defined via 'const'
+        self._consts = set()
 
     # --- Error helpers -------------------------------------------------
     def _err(self, code: str, message: str, *, line: int, column: int = 1, line_text: Optional[str] = None, hint: Optional[str] = None) -> Dict[str, Any]:
@@ -363,10 +450,10 @@ class Interpreter:
                 self._err("SYNTAX_ERROR", str(e), line=i + 1, column=1, line_text=lines[i], hint="Add a matching 'end' for this 'if'."),
             )
 
-        # find optional else inside block (top-level). We track `depth` to avoid
-        # mistaking nested `else` keywords for the branch separator of this
-        # top-level `if` block.
-        else_idx = None
+        # find optional else/elif at top level. We only support a single elif.
+        else_idx: Optional[int] = None
+        elif_idx: Optional[int] = None
+        elif_cond: Optional[str] = None
         depth = 0
         for j, r in enumerate(block):
             t = r.strip()
@@ -377,9 +464,13 @@ class Interpreter:
                 if depth > 0:
                     depth -= 1
                 continue
-            if t == "else" and depth == 0:
-                else_idx = j
-                break
+            if depth == 0:
+                if t == "else" and else_idx is None:
+                    else_idx = j
+                    break
+                if t.startswith("elif ") and t.endswith(" then") and elif_idx is None:
+                    elif_idx = j
+                    elif_cond = t[len("elif "):-len(" then")].strip()
         try:
             cond_val = eval_expr(cond_expr, env)
         except EvalError as e:
@@ -393,10 +484,37 @@ class Interpreter:
                 self._err("RUNTIME_ERROR", str(e), line=i + 1, column=col, line_text=lines[i].strip(), hint="Fix the condition expression after 'if'."),
             )
 
+        # Determine segment ranges
+        end_then = len(block)
+        if elif_idx is not None:
+            end_then = min(end_then, elif_idx)
+        if else_idx is not None:
+            end_then = min(end_then, else_idx)
+
         if bool(cond_val):
-            exec_block = block[:else_idx] if else_idx is not None else block
+            exec_block = block[:end_then]
         else:
-            exec_block = block[else_idx + 1 :] if else_idx is not None else []
+            if elif_idx is not None and elif_cond is not None:
+                # evaluate elif condition
+                try:
+                    cond2 = eval_expr(elif_cond, env)
+                except EvalError as e:
+                    base_col = 1 + len("if ")
+                    col = base_col + (e.column or 1) - 1
+                    return (
+                        i,
+                        0,
+                        [],
+                        [],
+                        self._err("RUNTIME_ERROR", str(e), line=i + 1, column=col, line_text=lines[i].strip(), hint="Fix the elif condition."),
+                    )
+                if bool(cond2):
+                    end_elif_block = else_idx if else_idx is not None else len(block)
+                    exec_block = block[elif_idx + 1 : end_elif_block]
+                else:
+                    exec_block = block[else_idx + 1 :] if else_idx is not None else []
+            else:
+                exec_block = block[else_idx + 1 :] if else_idx is not None else []
 
         # Run the selected branch in a fresh interpreter to avoid mutating the
         # outer scope. Nested runs inherit eco/limit settings.
@@ -587,6 +705,14 @@ class Interpreter:
                 0,
                 {"code": "SYNTAX_ERROR", "message": "Invalid identifier in let", "hint": "Identifiers must be letters/digits/_ and not start with a digit."},
             )
+        if name in getattr(self, "_consts", set()) and name in env:
+            return (
+                None,
+                [],
+                [],
+                0,
+                {"code": "RUNTIME_ERROR", "message": f"Cannot reassign const '{name}'"},
+            )
         try:
             val = eval_expr(expr, env)
         except EvalError as e:
@@ -596,6 +722,25 @@ class Interpreter:
         env[name] = val
         ops_delta = int(self.ops_map.get("assign", 5) * ops_scale)
         return (1, [], [], ops_delta, None)
+
+    def _dispatch_const(self, line: str, i: int, env: Dict[str, Any], ops_scale: float):
+        rest = line[len("const "):].strip()
+        if "=" not in rest:
+            return i, 0, [], [], {"code": "SYNTAX_ERROR", "message": "Expected '=' in const", "hint": "Use: const NAME = expr"}
+        name, expr = rest.split("=", 1)
+        name = name.strip()
+        expr = expr.strip()
+        if not name.isidentifier():
+            return i, 0, [], [], {"code": "SYNTAX_ERROR", "message": "Invalid const name"}
+        if name in env:
+            return i, 0, [], [], {"code": "RUNTIME_ERROR", "message": f"'{name}' already defined"}
+        try:
+            val = eval_expr(expr, env)
+        except EvalError as e:
+            return i, 0, [], [], {"code": "RUNTIME_ERROR", "message": str(e)}
+        env[name] = val
+        getattr(self, "_consts").add(name)
+        return i + 1, int(self.ops_map.get("assign", 5) * ops_scale), [], [], None
 
     def _handle_ask(
         self,
@@ -765,6 +910,7 @@ class Interpreter:
             "let": lambda: self._dispatch_simple_prefix(
                 line, i, env, ops_scale
             ),
+            "const": lambda: self._dispatch_const(line, i, env, ops_scale),
             "warn": lambda: self._dispatch_simple_prefix(
                 line, i, env, ops_scale
             ),
@@ -779,6 +925,7 @@ class Interpreter:
             "repeat": lambda: self._dispatch_control_repeat(
                 lines, i, env, inputs, output_lines, warnings, total_ops, ops_scale
             ),
+            # future: while/for/withBudget can be added here when implemented
         }
 
         handler = dispatch_map.get(token)
@@ -1297,6 +1444,8 @@ class Interpreter:
             ops_scale_local = env.get("_ops_scale", ops_scale)
             # charge a small 'other' op cost for the dispatch itself
             total_ops += self.ops_map.get("other", 5)
+            # keep ecoOps() in sync
+            env["_eco_ops"] = total_ops
             new_i, ops_delta, out_add, warn_add, err = self._dispatch_statement(
                 lines,
                 i,
