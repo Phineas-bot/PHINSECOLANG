@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react'
 
-// Prefer an explicit local backend port that we run in this workspace (8001).
+// Prefer an explicit local backend port that we run in this workspace (8000).
 // Allow overriding via VITE_API_BASE for other environments.
-const DEFAULT_API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8001'
+const DEFAULT_API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
 
 function EcoCard({ eco }) {
   if (!eco) return null
