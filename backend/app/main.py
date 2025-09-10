@@ -10,7 +10,12 @@ resource/safety limits.
 import time
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI
+import os
+import bcrypt
+import jwt
+from datetime import datetime, timedelta
+from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -48,6 +53,68 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --- Auth setup ---
+JWT_SECRET = os.environ.get("ECOLANG_JWT_SECRET", "dev-secret-change-me")
+JWT_ALG = "HS256"
+JWT_EXP_MIN = int(os.environ.get("ECOLANG_JWT_EXP_MIN", "120"))
+security = HTTPBearer(auto_error=False)
+
+class AuthRegister(BaseModel):
+    username: str
+    password: str
+
+class AuthLogin(BaseModel):
+    username: str
+    password: str
+
+class TokenOut(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+def _hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+def _verify_password(password: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("utf-8"))
+    except Exception:
+        return False
+
+def _create_token(user_id: int, username: str) -> str:
+    now = datetime.utcnow()
+    payload = {"sub": str(user_id), "username": username, "iat": int(now.timestamp()), "exp": int((now + timedelta(minutes=JWT_EXP_MIN)).timestamp())}
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+
+def get_current_user_id(creds: HTTPAuthorizationCredentials = Depends(security)) -> Optional[int]:
+    if not creds or not creds.scheme.lower() == "bearer":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    token = creds.credentials
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        return int(payload.get("sub"))
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+@app.post("/auth/register", response_model=TokenOut, status_code=201)
+def register(data: AuthRegister):
+    uname = data.username.strip()
+    if not uname or not data.password:
+        raise HTTPException(status_code=400, detail="username and password required")
+    existing = db.get_user_by_username(uname)
+    if existing:
+        raise HTTPException(status_code=409, detail="username taken")
+    uid = db.create_user(uname, _hash_password(data.password))
+    token = _create_token(uid, uname)
+    return TokenOut(access_token=token)
+
+@app.post("/auth/login", response_model=TokenOut)
+def login(data: AuthLogin):
+    u = db.get_user_by_username(data.username.strip())
+    if not u or not _verify_password(data.password, u["password_hash"]):
+        raise HTTPException(status_code=401, detail="invalid credentials")
+    token = _create_token(u["user_id"], u["username"])
+    return TokenOut(access_token=token)
 
 
 def _cap_settings(settings: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -167,28 +234,35 @@ class SaveScriptRequest(BaseModel):
     eco_stats: Optional[Dict[str, Any]] = None
 
 
-@app.post('/save')
-async def save_script(req: SaveScriptRequest):
+@app.post('/save', status_code=201)
+async def save_script(req: SaveScriptRequest, user_id: int = Depends(get_current_user_id)):
     try:
-        script_id = db.save_script(req.title, req.code, None, req.eco_stats)
+        script_id = db.save_script(req.title, req.code, user_id, req.eco_stats)
     except Exception as e:
-        return {'error': str(e)}
-    return {'script_id': script_id}
+        return {"error": str(e)}
+    return {"script_id": script_id}
 
 
 @app.get('/scripts')
-async def list_scripts():
-    return db.list_scripts()
+async def list_scripts(user_id: int = Depends(get_current_user_id)):
+    return db.list_scripts(user_id)
 
 
 @app.get('/scripts/{script_id}')
-async def get_script(script_id: int):
+async def get_script(script_id: int, user_id: int = Depends(get_current_user_id)):
     s = db.get_script(script_id)
     if not s:
         return {'error': 'not found'}
+    if s.get("user_id") not in (None, user_id):
+        raise HTTPException(status_code=403, detail="forbidden")
     return s
 
 
 @app.get('/stats')
-async def list_stats(script_id: Optional[int] = None):
+async def list_stats(script_id: Optional[int] = None, user_id: int = Depends(get_current_user_id)):
+    # If script_id provided, ensure it belongs to user
+    if script_id:
+        s = db.get_script(script_id)
+        if not s or s.get("user_id") not in (None, user_id):
+            raise HTTPException(status_code=403, detail="forbidden")
     return db.list_runs(script_id)

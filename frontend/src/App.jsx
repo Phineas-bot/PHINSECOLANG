@@ -57,6 +57,10 @@ export default function App() {
   const [tab, setTab] = useState('editor')
   const [apiBase, setApiBase] = useState(() => localStorage.getItem('apiBase') || DEFAULT_API_BASE)
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'light')
+  const [token, setToken] = useState(() => localStorage.getItem('token') || '')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [authMode, setAuthMode] = useState('login')
 
   const [code, setCode] = useState('say "Hello Eco"\n')
   const [inputsText, setInputsText] = useState('{"answer":"yes"}')
@@ -85,6 +89,10 @@ export default function App() {
   }, [apiBase])
 
   useEffect(() => {
+    if (token) localStorage.setItem('token', token); else localStorage.removeItem('token')
+  }, [token])
+
+  useEffect(() => {
     const onKey = (e) => {
       // Ctrl+Enter: Run; Ctrl+S: Save
       if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); runCode() }
@@ -96,7 +104,7 @@ export default function App() {
 
   async function loadScripts() {
     try {
-      const r = await fetch(`${apiBase}/scripts`)
+  const r = await fetch(`${apiBase}/scripts`, { headers: token ? { 'Authorization': `Bearer ${token}` } : {} })
       const j = await r.json()
       setScripts(j || [])
     } catch {}
@@ -134,7 +142,7 @@ export default function App() {
     try {
       const resp = await fetch(`${apiBase}/save`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(token ? { 'Authorization': `Bearer ${token}` } : {}) },
         body: JSON.stringify({ title, code }),
       })
       const j = await resp.json()
@@ -147,7 +155,7 @@ export default function App() {
 
   async function openScript(id) {
     try {
-      const r = await fetch(`${apiBase}/scripts/${id}`)
+  const r = await fetch(`${apiBase}/scripts/${id}`, { headers: token ? { 'Authorization': `Bearer ${token}` } : {} })
       const s = await r.json()
       if (!s || s.error) return
       setCode(s.code_text || '')
@@ -160,7 +168,7 @@ export default function App() {
 
   async function fetchStats(id) {
     try {
-      const r = await fetch(`${apiBase}/stats?script_id=${id}`)
+  const r = await fetch(`${apiBase}/stats?script_id=${id}`, { headers: token ? { 'Authorization': `Bearer ${token}` } : {} })
       const j = await r.json()
       setStats(Array.isArray(j) ? j : [])
     } catch {}
@@ -173,6 +181,36 @@ export default function App() {
   setError(null)
   }
 
+  async function doAuth(mode) {
+    try {
+      const path = mode === 'register' ? '/auth/register' : '/auth/login'
+      const resp = await fetch(`${apiBase}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+      })
+      const j = await resp.json()
+      if (!resp.ok) return
+      setToken(j.access_token || '')
+      setPassword('')
+      setTab('editor')
+      loadScripts()
+    } catch {}
+  }
+
+  function logout() {
+    setToken('')
+    setUsername('')
+    setPassword('')
+    setScripts([])
+    setCurrentScriptId(null)
+    setStats([])
+    setTab('landing')
+  }
+
+  const isAuthed = !!token
+  const showEditor = isAuthed && tab !== 'about' && tab !== 'scripts' ? 'editor' : tab
+
   return (
     <div className={`container ${theme === 'dark' ? 'theme-dark' : ''}`}>
       <header className="header">
@@ -182,6 +220,11 @@ export default function App() {
             <span>API:</span>
             <input value={apiBase} onChange={e => setApiBase(e.target.value)} placeholder="http://127.0.0.1:8001" />
           </label>
+          {isAuthed ? (
+            <button onClick={logout}>Logout</button>
+          ) : (
+            <button onClick={() => setTab('landing')}>Login / Sign up</button>
+          )}
           <button className="theme" onClick={() => setTheme(t => (t === 'dark' ? 'light' : 'dark'))}>
             {theme === 'dark' ? '☀️ Light' : '🌙 Dark'}
           </button>
@@ -189,12 +232,36 @@ export default function App() {
       </header>
 
       <nav className="tabs">
-        <button className={tab==='editor'? 'active':''} onClick={() => setTab('editor')}>Editor</button>
+        <button className={showEditor==='editor'? 'active':''} onClick={() => setTab('editor')} disabled={!isAuthed}>Editor</button>
         <button className={tab==='scripts'? 'active':''} onClick={() => { setTab('scripts'); loadScripts() }}>Saved Scripts</button>
         <button className={tab==='about'? 'active':''} onClick={() => setTab('about')}>About</button>
       </nav>
 
-      {tab === 'editor' && (
+      {!isAuthed && (
+        <div className="panel landing">
+          <h2>Welcome to EcoLang</h2>
+          <p>Learn programming and green computing with a fun, minimal language. Create an account or log in to start coding.</p>
+          <div className="landing-grid">
+            <form className="auth" onSubmit={(e)=>{e.preventDefault(); doAuth(authMode)}}>
+              <div className="field">
+                <label>Username</label>
+                <input value={username} onChange={e=>setUsername(e.target.value)} required />
+              </div>
+              <div className="field">
+                <label>Password</label>
+                <input type="password" value={password} onChange={e=>setPassword(e.target.value)} required />
+              </div>
+              <div className="field inline">
+                <label><input type="radio" checked={authMode==='login'} onChange={()=>setAuthMode('login')} /> Login</label>
+                <label><input type="radio" checked={authMode==='register'} onChange={()=>setAuthMode('register')} /> Sign up</label>
+              </div>
+              <div className="actions"><button type="submit">{authMode==='login' ? 'Login' : 'Create account'}</button></div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {isAuthed && showEditor === 'editor' && (
         <div className="panel">
           <div className="editor-grid">
             <div>
@@ -226,7 +293,7 @@ export default function App() {
         </div>
       )}
 
-      {tab === 'scripts' && (
+  {tab === 'scripts' && (
         <div className="panel">
           <div className="scripts-grid">
             <div>

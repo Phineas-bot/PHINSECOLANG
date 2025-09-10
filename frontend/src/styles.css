@@ -44,3 +44,10 @@ input, textarea { border:1px solid #cbd5e1; border-radius:6px; padding:6px }
 .errors .codeframe { background: #fff; color: #000; border: 1px dashed #c62828; padding: 6px; margin-top: 6px; white-space: pre-wrap }
 .theme-dark .errors .codeframe { background:#0b1220; color:#e2e8f0; border-color:#7f1d1d }
 .errors .hint { margin-top: 6px; font-style: italic }
+
+/* Landing */
+.landing { display:grid; gap:12px; align-items:center; justify-items:center; text-align:center }
+.landing-grid { display:grid; grid-template-columns: 1fr; gap:12px; width:min(520px, 100%) }
+.auth .field { display:grid; gap:6px; text-align:left }
+.auth .field.inline { display:flex; gap:12px; align-items:center }
+.auth .actions button { padding:8px 12px; border-radius:6px; border:1px solid #16a34a; background:#22c55e; color:#052e16; cursor:pointer }
