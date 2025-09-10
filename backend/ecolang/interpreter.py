@@ -457,7 +457,7 @@ class Interpreter:
         depth = 0
         for j, r in enumerate(block):
             t = r.strip()
-            if t.startswith("if ") or t.startswith("repeat "):
+            if t.startswith("if ") or t.startswith("repeat ") or t.startswith("while ") or t.startswith("for "):
                 depth += 1
                 continue
             if t == "end":
@@ -646,7 +646,7 @@ class Interpreter:
         depth = 0
         for j, r in enumerate(block):
             t = r.strip()
-            if t.startswith("if ") or t.startswith("repeat "):
+            if t.startswith("if ") or t.startswith("repeat ") or t.startswith("while ") or t.startswith("for "):
                 depth += 1
                 continue
             if t == "end":
@@ -827,7 +827,7 @@ class Interpreter:
             raw = lines[j]
             txt = raw.strip()
             # track nested starts
-            if txt.startswith("if ") or txt.startswith("repeat ") or txt.startswith("func "):
+            if txt.startswith("if ") or txt.startswith("repeat ") or txt.startswith("func ") or txt.startswith("while ") or txt.startswith("for "):
                 depth += 1
                 block.append(raw)
             elif txt == "end":
@@ -840,6 +840,61 @@ class Interpreter:
             j += 1
         # if we reach here, unmatched block
         raise EvalError("Missing end for block")
+
+    # --- Inline block execution helper (preserves env mutations) -----------
+    def _execute_block_inline(
+        self,
+        block: List[str],
+        env: Dict[str, Any],
+        inputs: Dict[str, Any],
+        ops_scale: float,
+    ) -> Tuple[List[str], List[str], int, Optional[Dict[str, Any]]]:
+        """Execute a block of lines reusing the given env.
+
+        Returns (out_add, warn_add, ops_delta, err_or_none).
+        """
+        out_lines: List[str] = []
+        warn_add: List[str] = []
+        ops_delta = 0
+        i = 0
+        start_wall = time.time()
+        steps_local = 0
+        while i < len(block):
+            raw = block[i]
+            if time.time() - start_wall > self.max_time_s:
+                return out_lines, warn_add, ops_delta, {"code": "TIMEOUT", "message": "Time limit exceeded in block"}
+            if steps_local > self.max_steps:
+                warn_add.append("Step limit exceeded in block")
+                return out_lines, warn_add, ops_delta, {"code": "STEP_LIMIT", "message": "Step limit exceeded in block"}
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                i += 1
+                continue
+            steps_local += 1
+            ops_delta += self.ops_map.get("other", 5)
+            new_i, inner_ops, out_add, w_add, err = self._dispatch_statement(
+                block,
+                i,
+                line,
+                env,
+                inputs,
+                out_lines,
+                warn_add,
+                ops_delta,
+                ops_scale,
+            )
+            if err:
+                return out_lines, warn_add, ops_delta, err
+            if out_add:
+                for o in out_add:
+                    if sum(len(x) for x in out_lines) + len(o) > self.max_output_chars:
+                        return out_lines, warn_add, ops_delta, {"code": "OUTPUT_LIMIT", "message": "Output length limit reached in block"}
+                    out_lines.append(o)
+            if w_add:
+                warn_add.extend(w_add)
+            ops_delta += inner_ops
+            i = new_i
+        return out_lines, warn_add, ops_delta, None
 
     def _dispatch_statement(
         self,
@@ -923,6 +978,12 @@ class Interpreter:
                 lines, i, env, inputs, output_lines, warnings, total_ops, ops_scale
             ),
             "repeat": lambda: self._dispatch_control_repeat(
+                lines, i, env, inputs, output_lines, warnings, total_ops, ops_scale
+            ),
+            "while": lambda: self._dispatch_control_while(
+                lines, i, env, inputs, output_lines, warnings, total_ops, ops_scale
+            ),
+            "for": lambda: self._dispatch_control_for(
                 lines, i, env, inputs, output_lines, warnings, total_ops, ops_scale
             ),
             # future: while/for/withBudget can be added here when implemented
@@ -1225,6 +1286,172 @@ class Interpreter:
             total_ops,
             ops_scale,
         )
+
+    def _dispatch_control_while(
+        self,
+        lines: List[str],
+        i: int,
+        env: Dict[str, Any],
+        inputs: Dict[str, Any],
+        output_lines: List[str],
+        warnings: List[str],
+        total_ops: int,
+        ops_scale: float,
+    ):
+        return self._handle_while(lines, i, env, inputs, output_lines, warnings, total_ops, ops_scale)
+
+    def _dispatch_control_for(
+        self,
+        lines: List[str],
+        i: int,
+        env: Dict[str, Any],
+        inputs: Dict[str, Any],
+        output_lines: List[str],
+        warnings: List[str],
+        total_ops: int,
+        ops_scale: float,
+    ):
+        return self._handle_for(lines, i, env, inputs, output_lines, warnings, total_ops, ops_scale)
+
+    def _handle_while(
+        self,
+        lines: List[str],
+        i: int,
+        env: Dict[str, Any],
+        inputs: Dict[str, Any],
+        output_lines: List[str],
+        warnings: List[str],
+        total_ops: int,
+        ops_scale: float,
+    ):
+        line = lines[i].strip()
+        if not line.endswith(" then"):
+            return i, 0, [], [], self._err(
+                "SYNTAX_ERROR",
+                "Expected 'then' after while condition",
+                line=i + 1,
+                column=len(line) + 1,
+                line_text=lines[i],
+                hint="Write: while <condition> then",
+            )
+        cond_expr = line[len("while "):-len(" then")].strip()
+        try:
+            block, end_idx = self._extract_block_for_run(lines, i + 1)
+        except EvalError as e:
+            return i, 0, [], [], self._err("SYNTAX_ERROR", str(e), line=i + 1, column=1, line_text=lines[i], hint="Add a matching 'end' for this 'while'.")
+
+        out_add: List[str] = []
+        warn_add: List[str] = []
+        ops_delta = 0
+        iterations = 0
+        while True:
+            # Evaluate condition in current env
+            try:
+                cond_val = eval_expr(cond_expr, env)
+            except EvalError as e:
+                base_col = 1 + len("while ")
+                col = base_col + (e.column or 1) - 1
+                return i, 0, [], [], self._err("RUNTIME_ERROR", str(e), line=i + 1, column=col, line_text=lines[i].strip(), hint="Fix the while condition.")
+            if not bool(cond_val):
+                break
+            if iterations >= self.max_loop:
+                warn_add.append(f"While iterations limited to {self.max_loop}")
+                break
+            if total_ops + ops_delta > self.max_steps:
+                warn_add.append("Step limit exceeded inside while; aborted")
+                break
+            ops_delta += int(self.ops_map.get("loop_check", 5) * ops_scale)
+            # Execute block inline so env mutations persist
+            block_out, block_warns, block_ops, err = self._execute_block_inline(block, env, inputs, ops_scale)
+            if err:
+                return i, 0, [], [], err
+            if block_out:
+                out_add.extend(block_out)
+            if block_warns:
+                warn_add.extend(block_warns)
+            ops_delta += block_ops
+            iterations += 1
+        return end_idx + 1, ops_delta, out_add, warn_add, None
+
+    def _handle_for(
+        self,
+        lines: List[str],
+        i: int,
+        env: Dict[str, Any],
+        inputs: Dict[str, Any],
+        output_lines: List[str],
+        warnings: List[str],
+        total_ops: int,
+        ops_scale: float,
+    ):
+        # Syntax: for name = start to end [step s]
+        header = lines[i].strip()
+        body = header[len("for "):].strip()
+        if "=" not in body or " to " not in body:
+            return i, 0, [], [], self._err(
+                "SYNTAX_ERROR",
+                "Use: for name = start to end [step s]",
+                line=i + 1,
+                column=1,
+                line_text=lines[i],
+            )
+        name_part, rest = body.split("=", 1)
+        varname = name_part.strip()
+        if not varname.isidentifier():
+            return i, 0, [], [], self._err("SYNTAX_ERROR", "Invalid loop variable name", line=i + 1, column=len("for ") + 1, line_text=lines[i])
+        if " step " in rest:
+            range_part, step_part = rest.split(" step ", 1)
+        else:
+            range_part, step_part = rest, None
+        if " to " not in range_part:
+            return i, 0, [], [], self._err("SYNTAX_ERROR", "Missing 'to' in for range", line=i + 1, column=1, line_text=lines[i])
+        start_expr, end_expr = [s.strip() for s in range_part.split(" to ", 1)]
+        try:
+            start_val = eval_expr(start_expr, env)
+            end_val = eval_expr(end_expr, env)
+            step_val = eval_expr(step_part, env) if step_part else (1 if start_val <= end_val else -1)
+        except EvalError as e:
+            return i, 0, [], [], self._err("RUNTIME_ERROR", str(e), line=i + 1, column=1, line_text=lines[i])
+        try:
+            cur = float(start_val)
+            endf = float(end_val)
+            stepf = float(step_val)
+            if stepf == 0:
+                return i, 0, [], [], self._err("RUNTIME_ERROR", "for step cannot be 0", line=i + 1, column=1, line_text=lines[i])
+        except Exception:
+            return i, 0, [], [], self._err("RUNTIME_ERROR", "Invalid numeric values in for", line=i + 1, column=1, line_text=lines[i])
+        try:
+            block, end_idx = self._extract_block_for_run(lines, i + 1)
+        except EvalError as e:
+            return i, 0, [], [], self._err("SYNTAX_ERROR", str(e), line=i + 1, column=1, line_text=lines[i], hint="Add a matching 'end' for this 'for'.")
+
+        out_add: List[str] = []
+        warn_add: List[str] = []
+        ops_delta = 0
+        iterations = 0
+        # Helper to check loop condition depending on step
+        def cont(c: float) -> bool:
+            return (c <= endf) if stepf > 0 else (c >= endf)
+        while cont(cur):
+            if iterations >= self.max_loop:
+                warn_add.append(f"For iterations limited to {self.max_loop}")
+                break
+            if total_ops + ops_delta > self.max_steps:
+                warn_add.append("Step limit exceeded inside for; aborted")
+                break
+            env[varname] = int(cur) if abs(cur - int(cur)) < 1e-9 else cur
+            ops_delta += int(self.ops_map.get("loop_check", 5) * ops_scale)
+            block_out, block_warns, block_ops, err = self._execute_block_inline(block, env, inputs, ops_scale)
+            if err:
+                return i, 0, [], [], err
+            if block_out:
+                out_add.extend(block_out)
+            if block_warns:
+                warn_add.extend(block_warns)
+            ops_delta += block_ops
+            iterations += 1
+            cur += stepf
+        return end_idx + 1, ops_delta, out_add, warn_add, None
 
     def _dispatch_simple_prefix(
         self,

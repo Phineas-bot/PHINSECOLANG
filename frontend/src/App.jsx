@@ -1,8 +1,83 @@
 import React, { useState, useEffect, useMemo } from 'react'
+import tutoMd from './docs/tuto.md?raw'
 
 // Prefer an explicit local backend port that we run in this workspace (8000).
 // Allow overriding via VITE_API_BASE for other environments.
 const DEFAULT_API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
+
+// Minimal markdown -> JSX renderer (headings, lists, code fences, paragraphs)
+function renderTutorial(md, opts = {}) {
+  const { onTryCode, onTryInputs } = opts
+  const lines = (md || '').split('\n')
+  const out = []
+  let i = 0, key = 0
+  const push = (el) => out.push(React.cloneElement(el, { key: key++ }))
+
+  while (i < lines.length) {
+    const line = lines[i]
+
+    // Fenced code block ```
+    if (line.startsWith('```')) {
+      const lang = line.slice(3).trim()
+      i++
+      const code = []
+      while (i < lines.length && !lines[i].startsWith('```')) {
+        code.push(lines[i])
+        i++
+      }
+      // skip closing ```
+      if (i < lines.length && lines[i].startsWith('```')) i++
+      const src = code.join('\n')
+      const langLc = (lang || '').toLowerCase()
+      const canTryCode = langLc !== 'json'
+      const canTryInputs = langLc === 'json'
+      push(
+        <div className="codebox">
+          <pre className={`md-code ${lang ? 'lang-' + lang : ''}`}><code>{src}</code></pre>
+          <div className="code-actions">
+            {canTryCode && (
+              <button type="button" className="try-btn" onClick={() => onTryCode && onTryCode(src)}>Try it</button>
+            )}
+            {canTryInputs && (
+              <button type="button" className="inputs-btn" onClick={() => onTryInputs && onTryInputs(src)}>Use as inputs</button>
+            )}
+          </div>
+        </div>
+      )
+      continue
+    }
+
+    // Headings
+    if (/^###\s+/.test(line)) { push(<h3>{line.replace(/^###\s+/, '')}</h3>); i++; continue }
+    if (/^##\s+/.test(line))  { push(<h2>{line.replace(/^##\s+/, '')}</h2>);  i++; continue }
+    if (/^#\s+/.test(line))   { push(<h1>{line.replace(/^#\s+/, '')}</h1>);   i++; continue }
+
+    // Lists
+    if (/^\-\s+/.test(line)) {
+      const items = []
+      while (i < lines.length && /^\-\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\-\s+/, ''))
+        i++
+      }
+      push(<ul>{items.map((t, idx) => <li key={idx}>{t}</li>)}</ul>)
+      continue
+    }
+
+    // Blank -> skip (also acts as paragraph separator)
+    if (!line.trim()) { i++; continue }
+
+    // Paragraph: accumulate until blank or block
+    const para = [line]
+    i++
+    while (i < lines.length && lines[i].trim() && !/^\-\s+/.test(lines[i]) && !lines[i].startsWith('```') && !/^#{1,3}\s+/.test(lines[i])) {
+      para.push(lines[i])
+      i++
+    }
+    push(<p>{para.join(' ')}</p>)
+  }
+
+  return (<div className="about">{out}</div>)
+}
 
 function EcoCard({ eco }) {
   if (!eco) return null
@@ -64,6 +139,9 @@ export default function App() {
 
   const [code, setCode] = useState('say "Hello Eco"\n')
   const [inputsText, setInputsText] = useState('{"answer":"yes"}')
+  const [inputsMode, setInputsMode] = useState(() => localStorage.getItem('inputsMode') || 'json')
+  const [formRows, setFormRows] = useState([])
+  const [formNotice, setFormNotice] = useState('')
   const inputsObj = useMemo(() => {
     try { return JSON.parse(inputsText || '{}') } catch { return {} }
   }, [inputsText])
@@ -101,6 +179,78 @@ export default function App() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   })
+
+  // Persist inputs mode
+  useEffect(() => { localStorage.setItem('inputsMode', inputsMode) }, [inputsMode])
+
+  // Helpers: JSON <-> rows
+  function jsonToRows(text) {
+    try {
+      const obj = JSON.parse(text || '{}')
+      if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return []
+      return Object.entries(obj).map(([k, v]) => {
+        if (v === null) return { key: k, type: 'null', value: '' }
+        if (Array.isArray(v)) return { key: k, type: 'array', value: JSON.stringify(v) }
+        switch (typeof v) {
+          case 'boolean': return { key: k, type: 'boolean', value: String(v) }
+          case 'number': return { key: k, type: 'number', value: String(v) }
+          case 'object': return { key: k, type: 'object', value: JSON.stringify(v) }
+          default: return { key: k, type: 'string', value: String(v) }
+        }
+      })
+    } catch {
+      return []
+    }
+  }
+
+  function rowsToJson(rows) {
+    const obj = {}
+    for (const r of rows) {
+      const k = (r.key || '').trim()
+      if (!k) continue
+      const t = r.type || 'string'
+      const v = r.value
+      try {
+        if (t === 'string') obj[k] = String(v ?? '')
+        else if (t === 'number') {
+          const n = Number(v)
+          if (!Number.isFinite(n)) throw new Error('Invalid number')
+          obj[k] = n
+        } else if (t === 'boolean') {
+          const b = String(v).toLowerCase()
+          obj[k] = b === 'true'
+        } else if (t === 'null') {
+          obj[k] = null
+        } else if (t === 'array' || t === 'object') {
+          const parsed = JSON.parse(v || (t === 'array' ? '[]' : '{}'))
+          obj[k] = parsed
+        } else {
+          obj[k] = v
+        }
+      } catch (e) {
+        // Skip invalid entries; caller can show a notice
+      }
+    }
+    return JSON.stringify(obj)
+  }
+
+  // When switching to form mode, hydrate rows from JSON
+  useEffect(() => {
+    if (inputsMode === 'form') {
+      const rows = jsonToRows(inputsText)
+      setFormRows(rows)
+      // Show a notice if JSON was invalid and produced empty rows while non-empty text
+      try {
+        JSON.parse(inputsText || '{}')
+        setFormNotice('')
+      } catch {
+        setFormNotice('Current JSON is invalid. Starting form with empty/default values.')
+      }
+    } else {
+      setFormNotice('')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inputsMode])
 
   async function loadScripts() {
     try {
@@ -269,8 +419,58 @@ export default function App() {
               <input value={title} onChange={e => setTitle(e.target.value)} />
               <label className="block-label">Code</label>
               <textarea value={code} onChange={e => setCode(e.target.value)} spellCheck={false} />
-              <label className="block-label">Inputs (JSON)</label>
-              <textarea className="inputs" value={inputsText} onChange={e => setInputsText(e.target.value)} spellCheck={false} />
+              <div className="inputs-header">
+                <span className="block-label">Inputs</span>
+                <div className="inputs-tabs" role="tablist">
+                  <button role="tab" aria-selected={inputsMode==='json'} className={inputsMode==='json'?'active':''} onClick={()=>setInputsMode('json')}>JSON</button>
+                  <button role="tab" aria-selected={inputsMode==='form'} className={inputsMode==='form'?'active':''} onClick={()=>setInputsMode('form')}>Form</button>
+                </div>
+              </div>
+              {inputsMode === 'json' ? (
+                <textarea className="inputs" value={inputsText} onChange={e => setInputsText(e.target.value)} spellCheck={false} />
+              ) : (
+                <div className="inputs-form">
+                  {formNotice && <div className="notice">{formNotice}</div>}
+                  <div className="form-rows">
+                    {formRows.map((r, idx) => (
+                      <div className="form-row" key={idx}>
+                        <input className="k" placeholder="name" value={r.key} onChange={e=>{
+                          const rows=[...formRows]; rows[idx] = { ...rows[idx], key: e.target.value }; setFormRows(rows); setInputsText(rowsToJson(rows))
+                        }} />
+                        <select className="t" value={r.type} onChange={e=>{
+                          const rows=[...formRows]; rows[idx] = { ...rows[idx], type: e.target.value };
+                          // default value for type
+                          if (e.target.value==='boolean') rows[idx].value = 'false'
+                          if (e.target.value==='number') rows[idx].value = '0'
+                          if (e.target.value==='null') rows[idx].value = ''
+                          if (e.target.value==='array') rows[idx].value = '[]'
+                          if (e.target.value==='object') rows[idx].value = '{}'
+                          setFormRows(rows); setInputsText(rowsToJson(rows))
+                        }}>
+                          <option value="string">string</option>
+                          <option value="number">number</option>
+                          <option value="boolean">boolean</option>
+                          <option value="null">null</option>
+                          <option value="array">array</option>
+                          <option value="object">object</option>
+                        </select>
+                        <input className="v" placeholder="value" value={r.value} onChange={e=>{
+                          const rows=[...formRows]; rows[idx] = { ...rows[idx], value: e.target.value }; setFormRows(rows); setInputsText(rowsToJson(rows))
+                        }} />
+                        <button type="button" className="del" title="Remove" onClick={()=>{
+                          const rows=[...formRows]; rows.splice(idx,1); setFormRows(rows); setInputsText(rowsToJson(rows))
+                        }}>✕</button>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="form-actions">
+                    <button type="button" onClick={()=>{
+                      const rows=[...formRows, { key:'', type:'string', value:'' }]; setFormRows(rows); setInputsText(rowsToJson(rows))
+                    }}>+ Add row</button>
+                    <button type="button" onClick={()=>{ setFormRows(jsonToRows(inputsText)); setFormNotice('Form reloaded from JSON') }}>Reload from JSON</button>
+                  </div>
+                </div>
+              )}
               <div className="controls">
                 <button onClick={runCode} title="Ctrl+Enter">▶ Run</button>
                 <button onClick={saveScript} title="Ctrl+S">💾 Save</button>
@@ -343,15 +543,12 @@ export default function App() {
         </div>
       )}
 
-      {tab === 'about' && (
+    {tab === 'about' && (
         <div className="panel">
-          <h2>About EcoLang</h2>
-          <p>EcoLang is a lightweight educational language that teaches programming and green computing. Write code, run it securely on the backend, and get eco impact estimates and tips.</p>
-          <ul>
-            <li>Core statements: say, let, warn, ask, if/then/else/end, repeat N times … end, ecoTip, savePower N</li>
-            <li>New: func name [args] … end; return; call name with args [into var]</li>
-            <li>Keyboard: Ctrl+Enter to Run, Ctrl+S to Save</li>
-          </ul>
+          {renderTutorial(tutoMd, {
+            onTryCode: (src) => { setCode(src); setTab('editor') },
+            onTryInputs: (json) => { setInputsText(json); setInputsMode('json'); setTab('editor') },
+          })}
         </div>
       )}
     </div>
