@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: ecolang-api
+    env: python
+    plan: free
+    autoDeploy: true
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /docs
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0

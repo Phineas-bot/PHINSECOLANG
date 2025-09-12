@@ -65,6 +65,30 @@ def init_db():
     conn.close()
 
 
+def create_user(username: str, password_hash: str) -> int:
+    """Create a new user and return its user_id."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        'INSERT INTO Users (username, password_hash) VALUES (?, ?)',
+        (username, password_hash),
+    )
+    user_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return user_id
+
+
+def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
+    """Fetch a user row by username, or None if not found."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute('SELECT user_id, username, password_hash, created_at FROM Users WHERE username = ?', (username,))
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
 def save_script(
     title: str,
     code_text: str,
@@ -99,17 +123,14 @@ def save_script(
     return script_id
 
 
-def list_scripts() -> List[Dict[str, Any]]:
-    """Return a list of saved scripts (id, title, created_at) ordered by newest.
-
-    The returned items are plain dictionaries suitable for JSON serialization.
-    """
+def list_scripts(user_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Return a list of saved scripts for a user (or all if user_id is None)."""
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute(
-        'SELECT script_id, title, created_at FROM Scripts '
-        'ORDER BY created_at DESC'
-    )
+    if user_id is None:
+        cur.execute('SELECT script_id, title, created_at FROM Scripts ORDER BY created_at DESC')
+    else:
+        cur.execute('SELECT script_id, title, created_at FROM Scripts WHERE user_id = ? ORDER BY created_at DESC', (user_id,))
     rows = cur.fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -120,8 +141,7 @@ def get_script(script_id: int) -> Optional[Dict[str, Any]]:
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        'SELECT script_id, title, code_text, created_at FROM Scripts '
-        'WHERE script_id = ?',
+        'SELECT script_id, user_id, title, code_text, created_at FROM Scripts WHERE script_id = ?',
         (script_id,),
     )
     row = cur.fetchone()

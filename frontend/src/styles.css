@@ -1,0 +1,78 @@
+:root { color-scheme: light dark }
+html, body, #root { height: 100%; }
+body { margin: 0; font-family: system-ui, sans-serif; background: #f7fafc; color:#0f172a }
+.theme-dark body, .theme-dark { background:#0b1220; color:#e2e8f0 }
+.container { width: 100%; min-height: 100vh; padding: 20px; margin: 0 }
+.panel { background: #fff; padding: 12px; border-radius: 6px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06) }
+.theme-dark .panel { background:#0f172a; box-shadow: 0 1px 3px rgba(0,0,0,0.3) }
+textarea { width: 100%; height: 180px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 14px }
+.inputs { height: 80px }
+.inputs-header { display:flex; align-items:center; justify-content: space-between; margin-top:8px }
+.inputs-tabs { display:flex; gap:6px }
+.inputs-tabs button { padding:4px 8px; border-radius:6px; border:1px solid #cbd5e1; background:#e2e8f0; cursor:pointer; font-size:12px }
+.inputs-tabs .active { background:#22c55e; color:#052e16; border-color:#16a34a }
+.inputs-form { border:1px solid #e2e8f0; border-radius:6px; padding:8px; background:#f8fafc }
+.theme-dark .inputs-form { border-color:#334155; background:#0b1220 }
+.inputs-form .notice { margin-bottom:6px; font-size:12px; color:#7c2d12; background:#ffedd5; padding:6px; border-radius:4px }
+.theme-dark .inputs-form .notice { color:#ffedd5; background:#451a03 }
+.form-rows { display:flex; flex-direction:column; gap:6px; max-height:180px; overflow:auto }
+.form-row { display:grid; grid-template-columns: 1fr 120px 1.2fr 32px; gap:6px }
+.form-row .k, .form-row .v, .form-row select { width:100% }
+.form-row .del { border:1px solid #fecaca; background:#fee2e2; color:#7f1d1d; border-radius:6px; cursor:pointer }
+.theme-dark .form-row .del { border-color:#7f1d1d; background:#2b1212; color:#ffb4b4 }
+.form-actions { display:flex; gap:8px; margin-top:6px }
+.form-actions button { padding:6px 10px; border-radius:6px; border:1px solid #cbd5e1; background:#e2e8f0; cursor:pointer }
+.theme-dark .form-actions button { background:#1e293b; border-color:#334155; color:#e2e8f0 }
+.controls { display:flex; gap:8px; margin-top:8px }
+.controls button { padding:6px 10px; border-radius:6px; border:1px solid #cbd5e1; background:#e2e8f0; cursor:pointer }
+.theme-dark .controls button { background:#1e293b; border-color:#334155; color:#e2e8f0 }
+.output { background:#0f172a; color:#e2e8f0; padding:12px; border-radius:4px; min-height: 140px; white-space: pre-wrap }
+.warnings { background:#fff3cd; padding:8px; border-radius:4px; color:#664d03 }
+.theme-dark .warnings { background:#4a3905; color:#fff7d6 }
+.eco { background:#f1f5f9; padding:8px; border-radius:6px; margin-top:8px }
+.theme-dark .eco { background:#111827 }
+.eco-grid { display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:8px }
+.eco .label { display:block; font-size:12px; color:#475569 }
+.header { display:flex; align-items:center; justify-content: space-between; margin-bottom:12px }
+.header-controls { display:flex; gap:8px; align-items:center }
+.api-base input { width: 320px }
+.theme { padding:6px 10px; border-radius:6px; border:1px solid #cbd5e1; background:#e2e8f0; cursor:pointer }
+.tabs { display:flex; gap:8px; margin-bottom:8px }
+.tabs button { padding:6px 10px; border-radius:6px; border:1px solid #cbd5e1; background:#e2e8f0; cursor:pointer }
+.tabs .active { background:#22c55e; color:#052e16; border-color:#16a34a }
+.editor-grid, .scripts-grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px }
+.list { list-style:none; padding:0; margin:0 }
+.row { display:flex; align-items:center; justify-content: space-between; padding:8px; border-bottom: 1px solid #e2e8f0 }
+.theme-dark .row { border-color:#334155 }
+.row .title { font-weight: 600 }
+.row .meta { font-size: 12px; color:#64748b }
+.row .actions button { padding:6px 10px; border-radius:6px; border:1px solid #cbd5e1; background:#e2e8f0; cursor:pointer }
+.table { width: 100%; border-collapse: collapse; font-size: 14px }
+.table th, .table td { border: 1px solid #e2e8f0; padding: 6px }
+.theme-dark .table th, .theme-dark .table td { border-color:#334155 }
+.block-label { display:block; margin:8px 0 4px; font-size: 12px; color:#475569 }
+input, textarea { border:1px solid #cbd5e1; border-radius:6px; padding:6px }
+.theme-dark input, .theme-dark textarea { background:#0b1220; color:#e2e8f0; border-color:#334155 }
+
+/* Error panel */
+.errors { margin-top: 8px; border: 1px solid #c62828; background: #ffebee; color: #b71c1c; padding: 8px; border-radius: 4px }
+.theme-dark .errors { background:#2b1212; color:#ffb4b4; border-color:#7f1d1d }
+.errors .codeframe { background: #fff; color: #000; border: 1px dashed #c62828; padding: 6px; margin-top: 6px; white-space: pre-wrap }
+.theme-dark .errors .codeframe { background:#0b1220; color:#e2e8f0; border-color:#7f1d1d }
+.errors .hint { margin-top: 6px; font-style: italic }
+
+/* Landing */
+.landing { display:grid; gap:12px; align-items:center; justify-items:center; text-align:center }
+.landing-grid { display:grid; grid-template-columns: 1fr; gap:12px; width:min(520px, 100%) }
+.auth .field { display:grid; gap:6px; text-align:left }
+.auth .field.inline { display:flex; gap:12px; align-items:center }
+.auth .actions button { padding:8px 12px; border-radius:6px; border:1px solid #16a34a; background:#22c55e; color:#052e16; cursor:pointer }
+
+/* About page code blocks */
+.about .codebox { border:1px solid #e2e8f0; border-radius:6px; overflow:hidden; margin:12px 0; background:#0f172a }
+.theme-dark .about .codebox { border-color:#334155 }
+.about .md-code { margin:0; padding:10px; color:#e2e8f0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; white-space: pre-wrap }
+.about .code-actions { display:flex; justify-content:flex-end; background:#0b1220; padding:6px 8px; border-top:1px solid #1f2937 }
+.about .try-btn { padding:4px 10px; border-radius:6px; border:1px solid #16a34a; background:#22c55e; color:#052e16; cursor:pointer }
+.about .inputs-btn { margin-left:8px; padding:4px 10px; border-radius:6px; border:1px solid #60a5fa; background:#93c5fd; color:#0c4a6e; cursor:pointer }
+.theme-dark .about .code-actions { background:#0b1220; border-top-color:#334155 }
