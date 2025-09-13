@@ -1,0 +1,160 @@
+# EcoLang — Product & Sprint Backlog
+
+## Product vision
+
+Teach programming fundamentals through a friendly language while fostering awareness of the environmental cost of computation. Provide a safe, low‑friction web playground with built‑in eco metrics so learners can see how code structure affects energy and CO₂.
+
+## Epics
+
+1. Interpreter Core and Safety
+2. API and Persistence
+3. Frontend Playground (Editor, Inputs, Results)
+4. Auth and Saved Scripts
+5. Tutorial and Docs
+6. Deployment and DevEx
+7. Eco Metrics and Tips
+
+## Product backlog (user stories)
+
+Priority scale: P0 (must), P1 (should), P2 (could)
+Estimate: S (≤1d), M (1–2d), L (3–5d)
+
+| ID | Epic | Story | Priority | Estimate | Status |
+|---|---|---|---|---|---|
+| PB-01 | Interpreter | As a learner, I can run `say/let/if/elif/else` so I see output quickly | P0 | M | Done |
+| PB-02 | Interpreter | As a learner, I can use loops (`repeat/while/for`) with limits | P0 | M | Done |
+| PB-03 | Interpreter | As a learner, I can define/call functions with `return` | P0 | M | Done |
+| PB-04 | Interpreter | As a learner, I can work with arrays (`array/append/at/len`) | P0 | M | Done |
+| PB-05 | API | As a user, I can run code via `/run` and get structured results | P0 | S | Done |
+| PB-06 | API | As a user, I can authenticate (`/auth/login,/auth/register`) | P0 | S | Done |
+| PB-07 | Persistence | As a user, I can save and list my scripts | P1 | M | Done |
+| PB-08 | Frontend | As a user, I can edit code and inputs (JSON/Form) and run | P0 | M | Done |
+| PB-09 | Frontend | As a user, I can view output, warnings, and eco metrics | P0 | S | Done |
+| PB-10 | Tutorial | As a learner, I can follow a runnable tutorial with examples | P0 | M | Done |
+| PB-11 | Deployment | As an owner, I can deploy the frontend on Netlify | P0 | S | Done |
+| PB-12 | Deployment | As an owner, I can deploy the backend (Railway-ready) | P1 | M | In progress |
+| PB-13 | DevEx | As a dev, I can expose local backend to the live frontend | P1 | S | Done |
+| PB-14 | Eco | As a learner, I can see energy/CO₂ estimates and tips | P1 | S | Done |
+| PB-15 | Security | As an owner, I want safe execution with strict limits | P0 | M | Done |
+| PB-16 | Docs | As a contributor, I can read HLD and deployment guides | P1 | S | Done |
+| PB-17 | Frontend | As a user, I can switch API base (runtime setting) | P2 | M | Todo |
+| PB-18 | API | As an owner, I have rate limiting and logging | P2 | L | Todo |
+| PB-19 | Persistence | As an owner, I can use Postgres + pooling | P2 | L | Todo |
+| PB-20 | Interpreter | As a learner, I can use `break/continue` | P2 | M | Todo |
+
+### Product backlog (detailed, estimation format)
+
+Legend: Priority 1=High, 2=Medium, 3=Low. Estimates in hours. Adjusted Estimate = Initial × Adjustment Factor.
+
+| ID | Requirement (Description / User Story) | Acceptance Criteria | Priority | Initial Estimate (h) | Adjustment Factor | Adjusted Estimate (h) |
+|----|----------------------------------------|---------------------|----------|----------------------|-------------------|-----------------------|
+| 1  | As a learner, I should be able to run a simple program using `say` and see the output. | Given code `say "Hello"`, when I click Run, then Output shows `Hello` and no errors; run completes within time/step limits. | 1 | 6 | 1.2 | 7.2 |
+| 2  | As a learner, I can create variables and use conditionals (`if/elif/else`) to control flow. | Given code with `let` and `if ... then ... end`, when I run it, then correct branch executes; missing `then` yields a clear error with line/column. | 1 | 8 | 1.25 | 10 |
+| 3  | As a learner, I can use loops (`repeat/while/for`) safely with limits. | `repeat 3 times` prints three lines; `while ... then` requires `then`; `for` includes end value; hitting loop caps yields a warning, not a crash. | 1 | 10 | 1.2 | 12 |
+| 4  | As a learner, I can define and call functions with `return`. | `func add a b` returns `3` for `1,2`; argument count mismatch produces a readable error. | 1 | 8 | 1.2 | 9.6 |
+| 5  | As a user, I can run code via API `/run` and receive structured results. | POST `/run` with code+inputs returns JSON including output, warnings, eco metrics, and errors if present. | 1 | 6 | 1.1 | 6.6 |
+| 6  | As a user, I can authenticate and receive a JWT. | `/auth/register` creates user; `/auth/login` returns token; protected endpoints require Bearer token. | 1 | 6 | 1.1 | 6.6 |
+| 7  | As a user, I can save and list my scripts. | `/save` persists code with title; `/scripts` lists my scripts; `/scripts/{id}` returns code text. | 2 | 10 | 1.1 | 11 |
+| 8  | As a user, I can edit code and inputs (JSON/Form) and run from the UI. | Editor supports code, inputs JSON textarea and Form mode; run shows output/warnings/eco; errors display with context. | 1 | 12 | 1.1 | 13.2 |
+| 9  | As a user, I can view eco metrics per run. | Response shows total ops, energy J/kWh, CO₂ g, and optional tips when ops are high. | 1 | 6 | 1.0 | 6 |
+| 10 | As a learner, I can follow runnable tutorial examples. | Tutorial page renders markdown; examples copy/paste and run unchanged; includes `while/for` and integer‑literal `repeat`. | 1 | 8 | 1.1 | 8.8 |
+| 11 | As an owner, I can deploy the frontend on Netlify. | `netlify.toml` config builds SPA; SPA routing works; environment variable `VITE_API_BASE` wired. | 1 | 4 | 1.0 | 4 |
+| 12 | As an owner, I can deploy the backend on Railway. | `Procfile` + `nixpacks.toml` install and start app; app responds at platform port; logs are clean. | 2 | 10 | 1.2 | 12 |
+| 13 | As a dev, I can expose the local backend to the live frontend. | Tunnel script prints public URL; frontend calls it successfully; stop script cleans up processes. | 2 | 4 | 1.0 | 4 |
+| 14 | As a learner, I can get eco tips when my program is heavy. | High ops insert a warning tip; `savePower N` adjusts scale and shows a message. | 2 | 4 | 1.0 | 4 |
+| 15 | As an owner, I want safe execution with strict limits. | Exceeding steps/time/output yields clear errors; no arbitrary attribute access or indexing; call depth/params limited. | 1 | 10 | 1.1 | 11 |
+| 16 | As a contributor, I can read HLD and deployment guides. | `archi.md`, deploy docs present; diagrams render; instructions reproducible on Windows. | 2 | 6 | 1.0 | 6 |
+| 17 | As a user, I can switch API base at runtime. | UI setting overrides API base without rebuild; persisted in localStorage. | 3 | 8 | 1.2 | 9.6 |
+| 18 | As an owner, I have rate limiting and structured logging. | Requests over threshold are limited; logs include correlation IDs/levels. | 3 | 16 | 1.1 | 17.6 |
+| 19 | As an owner, I can use Postgres with pooling. | App runs on Postgres; migrations exist; connection pool configured. | 3 | 20 | 1.2 | 24 |
+| 20 | As a learner, I can use `break/continue`. | `break` exits loop; `continue` skips to next iteration; errors for misuse are clear. | 3 | 14 | 1.1 | 15.4 |
+
+### Epic dependency graph
+
+```mermaid
+graph TD
+  A[Interpreter Core] --> B[API]
+  B --> C[Frontend Playground]
+  B --> D[Auth & Saved Scripts]
+  A --> E[Eco Metrics]
+  C --> F[Tutorial & Docs]
+  C --> G[Deployment]
+  D --> G
+```
+
+## Sprint backlog (tabular overview)
+
+| Release                     | Sprint   | ID of User Stories                     | Period                 |
+|----------------------------|----------|----------------------------------------|------------------------|
+| Release 1: API & Playground| Sprint 1 | PB-01, PB-02, PB-03, PB-05, PB-08      | 1–14 Sep (2 weeks)     |
+|                            | Sprint 2 | PB-04, PB-06, PB-09, PB-10             | 15–28 Sep (2 weeks)    |
+| Release 2: Persistence/Auth| Sprint 3 | PB-07, PB-12, PB-13, PB-16             | 29 Sep – 12 Oct (2 wks)|
+|                            | Sprint 4 | PB-11, PB-14, PB-17, PB-18             | 13–26 Oct (2 weeks)    |
+
+Notes
+
+- Story IDs reference the Product Backlog table above (e.g., PB-01 = core statements, PB-02 = loops, etc.).
+- Dates are indicative; adjust to your academic/organizational calendar.
+- You can export this table as an image via your markdown renderer or a doc tool if needed.
+
+### User journey (high level)
+
+```mermaid
+flowchart LR
+  Visitor -->|Sign up/Login| Auth
+  Auth --> Editor
+  Editor -->|Run code+inputs| RunAPI
+  RunAPI -->|output+warnings+eco| Results
+  Results -->|Save| SavedScripts
+  Editor -->|Open example| Tutorial
+```
+
+## Sprint backlog (Sprint 1)
+
+Sprint length: 2 weeks
+Goal: Make the platform usable end-to-end with live tutorial and deployable frontend.
+Team capacity (focus time): ~20 dev-days
+
+Committed stories
+
+- PB-01, PB-02, PB-03, PB-04, PB-05, PB-06, PB-08, PB-09, PB-10, PB-11, PB-13, PB-15, PB-16
+
+Tasks breakdown (sample)
+
+- Interpreter: finalize safe AST passes, loop caps, function depth/params
+- API: implement `/run`, auth endpoints, CORS, response models
+- Frontend: editor UI, inputs JSON/Form, results panel, About/Tutorial page
+- Eco: ops accounting and metrics, tips surfacing, `savePower`
+- Deployment: Netlify config, Cloudflare tunnel scripts
+- Docs: HLD, tutorial validation and lint fixes
+
+Definition of Done (DoD)
+
+- Unit tests passing; manual smoke tests for core flows
+- Tutorial examples run unmodified in the app
+- Linted markdown and committed configs (`Procfile`, `nixpacks.toml`, `netlify.toml`)
+- Frontend deployed; backend runnable locally and Railway-ready
+
+Risks and mitigations
+
+- Risk: dependency regressions → Mitigation: pin FastAPI/Pydantic versions
+- Risk: unsafe code paths → Mitigation: strict AST whitelist and budgets
+- Risk: platform config drift → Mitigation: treat configs as code; scripts to automate
+
+### Sprint timeline (overview)
+
+```mermaid
+gantt
+        dateFormat  YYYY-MM-DD
+        title Sprint 1 (2 weeks)
+        section Core
+        Interpreter Core        :done,    ic1, 2025-09-01, 3d
+        API /run + Auth         :active,  api1, 2025-09-02, 4d
+        section Frontend
+        Editor + Inputs + Run   :active,  fe1,  2025-09-03, 5d
+        Tutorial (runnable)     :done,    tut1, 2025-09-04, 3d
+        section Deploy
+        Netlify Frontend        :done,    dep1, 2025-09-05, 2d
+        Railway Backend (prep)  :        dep2, 2025-09-06, 3d
+```
+
