@@ -132,6 +132,14 @@ Then in Railway:
   - Add a Volume and set `ECOLANG_DB_PATH=/data/ecolang.db`.
 - CORS issues from the browser:
   - For production, replace permissive `allow_origins=["*"]` with your frontend origin(s). Until then, ensure you’re calling the correct URL.
+- Railway start command issues:
+  - If Railway reports “No start command was found”, add a Procfile at the repo root:
+  
+  ```procfile
+  web: python -m uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
+  ```
+  
+  Or set the Start Command explicitly in the service Settings.
 
 ## Security hardening checklist (post-deploy)
 
