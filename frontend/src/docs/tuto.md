@@ -160,11 +160,11 @@ Conditional execution. Syntax requires `then` on the `if` (and on `elif`). Only 
 
 ```text
 if len(name) > 0 then
-	say "Hi " + name
+    say "Hi " + name
 elif true then
-	say "No name given"
+    say "No name given"
 else
-	say "(fallback)"
+    say "(fallback)"
 end
 ```
 
@@ -180,7 +180,7 @@ Repeat the body block N times. If N exceeds the configured loop cap, it is trunc
 
 ```text
 repeat 3 times
-	say "tick"
+    say "tick"
 end
 ```
 
@@ -191,8 +191,8 @@ Loop while a condition remains true. The condition is re‑evaluated each iterat
 ```text
 let n = 3
 while n > 0 then
-	say toString(n)
-	let n = n - 1
+    say toString(n)
+    let n = n - 1
 end
 say "Done"
 ```
@@ -205,11 +205,11 @@ Count from start to end inclusive. `step` is optional (defaults to +1 when start
 
 ```text
 for i = 1 to 3
-	say i
+    say i
 end
 
 for k = 5 to 1 step -2
-	say k
+    say k
 end
 ```
 
@@ -221,7 +221,7 @@ Define:
 
 ```text
 func add a b
-	return a + b
+    return a + b
 end
 ```
 
@@ -264,8 +264,8 @@ Tip: You can query `ecoOps()` in expressions to inspect the current op count.
 let xs = array()
 let xs2 = append(xs, 1)
 let xs3 = append(xs2, 2)
-say length(xs3)          # 2
-say at(xs3, 1)           # 2
+say length(xs3)
+say at(xs3, 1)
 ```
 
 Remember: arrays are functional in helpers here—`append` returns a new array. Use `xs = append(xs, v)` if you want to keep growing the same variable.
@@ -285,9 +285,9 @@ Program:
 ask answer
 ask age
 if answer == "yes" and age >= 18 then
-	say "Welcome"
+    say "Welcome"
 else
-	say "Access denied"
+    say "Access denied"
 end
 ```
 
@@ -356,19 +356,23 @@ FizzBuzz (eco‑style, small N)
 
 ```text
 func fb n
-	if n % 15 == 0 then
-		return "FizzBuzz"
-	elif n % 3 == 0 then
-		return "Fizz"
-	else
-		return (toString(n % 5 == 0) == "True") and "Buzz" or toString(n)
-	end
+    if n % 15 == 0 then
+        return "FizzBuzz"
+    elif n % 3 == 0 then
+        return "Fizz"
+    else
+        if n % 5 == 0 then
+            return "Buzz"
+        else
+            return toString(n)
+        end
+    end
 end
 
 repeat 5 times
-	let i = ecoOps()  # not strictly 1..5, but fine for demo
-	call fb with i into out
-	say out
+    let i = ecoOps()  # not strictly 1..5, but fine for demo
+    call fb with i into out
+    say out
 end
 ```
 
@@ -376,7 +380,7 @@ Sum an array
 
 ```text
 func sum3 a b c
-	return a + b + c
+    return a + b + c
 end
 
 let xs = append(append(array(), 2), 3)
@@ -391,7 +395,7 @@ Greener run using savePower
 ```text
 savePower 25
 repeat 3 times
-	say ecoOps()
+    say ecoOps()
 end
 ```
 
@@ -415,7 +419,7 @@ Q: Is recursion allowed?
 
 Q: Are there while/for loops?
 
-- Not yet. Use `repeat N times`.
+- Yes. In addition to `repeat N times`, you can use `while <cond> then … end` and `for name = start to end [step s]`.
 
 ---
 
@@ -457,13 +461,15 @@ ask op
 let x = toNumber(a)
 let y = toNumber(b)
 if op == "+" then
-	say toString(x + y)
+    say toString(x + y)
 elif op == "-" then
-	say toString(x - y)
-elif op == "*" then
-	say toString(x * y)
+    say toString(x - y)
 else
-	say toString(x / y)
+    if op == "*" then
+        say toString(x * y)
+    else
+        say toString(x / y)
+    end
 end
 ```
 
@@ -479,12 +485,12 @@ Program:
 
 ```text
 func fact n
-	if n <= 1 then
-		return 1
-	else
-		call fact with n - 1 into prev
-		return n * prev
-	end
+    if n <= 1 then
+        return 1
+    else
+        call fact with n - 1 into prev
+        return n * prev
+    end
 end
 
 ask n
@@ -507,13 +513,13 @@ Program:
 ask score
 let s = toNumber(score)
 if s >= 85 then
-	say "Grade: A"
+    say "Grade: A"
 elif s >= 70 then
-	say "Grade: B"
+    say "Grade: B"
 elif s >= 55 then
-	say "Grade: C"
+    say "Grade: C"
 else
-	say "Grade: D"
+    say "Grade: D"
 end
 ```
 
@@ -547,10 +553,9 @@ Program:
 ```text
 ask count
 let n = toNumber(count)
-let i = 0
-repeat n times
-	let i = i + 1
-	say toString(n - i + 1)
+while n > 0 then
+    say toString(n)
+    let n = n - 1
 end
 say "Liftoff!"
 ```
@@ -562,6 +567,6 @@ Program:
 ```text
 savePower 50
 repeat 3 times
-	ecoTip
+    ecoTip
 end
 ```
