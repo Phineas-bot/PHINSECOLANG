@@ -1,0 +1,33 @@
+# Netlify configuration for PHINSECOLANG (Vite React frontend)
+# Docs: https://docs.netlify.com/configure-builds/file-based-configuration/
+
+[build]
+  # This is a monorepo; the frontend lives in the "frontend" subfolder
+  base = "frontend"
+  command = "npm install && npm run build"
+  # When base is set, publish is relative to that base directory
+  publish = "dist"
+
+# Single Page App fallback so client-side routing works on refresh
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# Optional: Proxy API calls to your backend to avoid CORS
+# If you prefer this approach, set VITE_API_BASE to "/api" in Netlify Env Vars
+# and update the target URL below to your deployed backend URL.
+#
+# [[redirects]]
+#   from = "/api/*"
+#   to = "https://YOUR-BACKEND-DOMAIN.EXAMPLE/:splat"
+#   status = 200
+#   force = true
+#   headers = { X-From = "netlify-proxy" }
+
+# Build environment variables: bake API base into the frontend build
+[build.environment]
+  # Points the deployed frontend to your locally hosted backend via Cloudflare Tunnel
+  VITE_API_BASE = "https://grace-pac-jazz-encounter.trycloudflare.com"
+  # Optionally pin Node version if needed (Netlify defaults are fine for Vite 4)
+  # NODE_VERSION = "18"

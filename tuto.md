@@ -21,7 +21,7 @@ This tutorial matches the current interpreter implementation in `backend/ecolang
 
 - No general file/network I/O; programs are sandboxed
 - Expressions are a restricted subset (no indexing with [], no attribute access, no arbitrary Python/JS calls)
-- Loop forms are limited to `repeat N times … end` (no while/for)
+- Loops supported: `repeat N times`, `while <cond> then … end`, and `for name = start to end [step s]`
 - Function recursion depth is capped; parameter count is small
 - Output length, step count, and wall‑clock time are limited per run
 
@@ -160,15 +160,16 @@ Conditional execution. Syntax requires `then` on the `if` (and on `elif`). Only 
 
 ```text
 if len(name) > 0 then
-	say "Hi " + name
+    say "Hi " + name
 elif true then
-	say "No name given"
+    say "No name given"
 else
-	say "(fallback)"
+    say "(fallback)"
 end
 ```
 
 Common errors:
+
 - Missing `then` after `if` or `elif`
 - Unmatched or extra `end`
 
@@ -178,7 +179,37 @@ Repeat the body block N times. If N exceeds the configured loop cap, it is trunc
 
 ```text
 repeat 3 times
-	say "tick"
+    say "tick"
+end
+
+```
+
+### while … then … end
+
+Loop while a condition remains true. The condition is re‑evaluated each iteration. A `then` is required on the `while` line.
+
+```text
+let n = 3
+while n > 0 then
+    say toString(n)
+    let n = n - 1
+end
+say "Done"
+```
+
+If the loop would exceed the internal iteration cap, it stops and adds a warning.
+
+### for name = start to end [step s]
+
+Count from start to end inclusive. `step` is optional (defaults to +1 when start ≤ end, else −1). The loop variable is available inside the body.
+
+```text
+for i = 1 to 3
+    say i
+end
+
+for k = 5 to 1 step -2
+    say k
 end
 ```
 
@@ -190,7 +221,7 @@ Define:
 
 ```text
 func add a b
-	return a + b
+    return a + b
 end
 ```
 
@@ -233,17 +264,25 @@ Tip: You can query `ecoOps()` in expressions to inspect the current op count.
 let xs = array()
 let xs2 = append(xs, 1)
 let xs3 = append(xs2, 2)
-say length(xs3)          # 2
-say at(xs3, 1)           # 2
+say length(xs3)
+say at(xs3, 1)
 ```
 
 Remember: arrays are functional in helpers here—`append` returns a new array. Use `xs = append(xs, v)` if you want to keep growing the same variable.
+
+Expected output:
+
+```text
+2
+2
+```
 
 ## Inputs (ask) and environment
 
 The runtime provides an `inputs` map. `ask name` reads from it or fails if missing.
 
 Example run inputs (JSON):
+ 
 ```json
 {"answer":"yes", "age": 18}
 ```
@@ -253,12 +292,14 @@ Program:
 ```text
 ask answer
 ask age
-if answer == "yes" and age >= 18 then
-	say "Welcome"
+if answer == "yes" and toNumber(age) >= 18 then
+    say "Welcome"
 else
-	say "Access denied"
+    say "Access denied"
 end
 ```
+
+Note: values read via `ask` come from the inputs JSON and may be strings. Use `toNumber(...)` when you need numeric comparisons (as shown for `age`).
 
 ## Errors and diagnostics
 
@@ -325,19 +366,23 @@ FizzBuzz (eco‑style, small N)
 
 ```text
 func fb n
-	if n % 15 == 0 then
-		return "FizzBuzz"
-	elif n % 3 == 0 then
-		return "Fizz"
-	else
-		return (toString(n % 5 == 0) == "True") and "Buzz" or toString(n)
-	end
+    if n % 15 == 0 then
+        return "FizzBuzz"
+    elif n % 3 == 0 then
+        return "Fizz"
+    else
+        if n % 5 == 0 then
+            return "Buzz"
+        else
+            return toString(n)
+        end
+    end
 end
 
 repeat 5 times
-	let i = ecoOps()  # not strictly 1..5, but fine for demo
-	call fb with i into out
-	say out
+    let i = ecoOps()
+    call fb with i into out
+    say out
 end
 ```
 
@@ -345,7 +390,7 @@ Sum an array
 
 ```text
 func sum3 a b c
-	return a + b + c
+    return a + b + c
 end
 
 let xs = append(append(array(), 2), 3)
@@ -360,7 +405,7 @@ Greener run using savePower
 ```text
 savePower 25
 repeat 3 times
-	say ecoOps()
+    say ecoOps()
 end
 ```
 
@@ -384,7 +429,7 @@ Q: Is recursion allowed?
 
 Q: Are there while/for loops?
 
-- Not yet. Use `repeat N times`.
+- Yes. In addition to `repeat N times`, you can use `while <cond> then … end` and `for name = start to end [step s]`.
 
 ---
 
