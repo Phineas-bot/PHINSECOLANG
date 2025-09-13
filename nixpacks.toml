@@ -1,0 +1,23 @@
+# Nixpacks config for Railway — manages build and start without manual settings
+# Docs: https://nixpacks.com/docs/configuration/file
+
+[phases.install]
+cmds = [
+  "pip install --upgrade pip",
+  "pip install -r backend/requirements.txt"
+]
+
+[phases.build]
+# No build step needed for the Python backend
+cmds = []
+
+[start]
+# Bind to $PORT so Railway can route traffic
+cmd = "python -m uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT"
+
+[variables]
+# Persist DB to a mounted volume at /data if configured in Railway
+ECOLANG_DB_PATH = "/data/ecolang.db"
+# Optional default token lifetime (override in Railway Variables if needed)
+ECOLANG_JWT_EXP_MIN = "120"
+# NOTE: Do NOT put secrets in this file; set ECOLANG_JWT_SECRET in Railway Variables.
