@@ -292,12 +292,14 @@ Program:
 ```text
 ask answer
 ask age
-if answer == "yes" and age >= 18 then
+if answer == "yes" and toNumber(age) >= 18 then
     say "Welcome"
 else
     say "Access denied"
 end
 ```
+
+Note: values read via `ask` come from the inputs JSON and may be strings. Use `toNumber(...)` when you need numeric comparisons (as shown for `age`).
 
 ## Errors and diagnostics
 
