@@ -120,6 +120,21 @@ Then in Railway:
 - Deployment method: Dockerfile
 - Start Command: leave empty (Docker CMD used). Railway will still map `$PORT`; either adapt the image to honor `$PORT` or configure a Start Command that sets `--port $PORT`.
 
+## Recommended Railway setup (Root Directory = backend)
+
+If you prefer a simpler configuration that doesn’t rely on a Procfile or custom env overrides, set your service to use the backend subfolder directly:
+
+- Root Directory: `backend`
+- Build Command: `pip install --upgrade pip && pip install -r requirements.txt`
+- Start Command: `python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+
+Notes
+
+- Service type must be a Web Service (not Static).
+- If you changed the directory or commands, click “Redeploy”.
+- With this setup, you do NOT need a Procfile.
+- For persistence, add a Volume at `/data` and set `ECOLANG_DB_PATH=/data/ecolang.db`.
+
 ## Troubleshooting
 
 - Module import error `backend.app.main:app`:
